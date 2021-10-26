@@ -144,7 +144,7 @@ def iterate(
                 img = np.stack((r_in, g_in, b_in), axis=1)
                 viz.images(img, win='Images', nrow=4, opts=dict(caption='Training samples', store_history=True))
                 viz.line([[loss_meter.value()[0]]], [(epoch-1) * 363 + i], win='Train', update='append')
-            else:
+            elif mode == "val":
                 viz.line([[loss_meter.value()[0]]], [epoch-1], win='Val', update='append')
 
     t_end = time.time()
@@ -357,11 +357,11 @@ def main(config):
             criterion=criterion,
             epoch=0,
             optimizer=optimizer,
+            viz=None,
             mode="test",
             device=device,
         )
-        print("Loss {:.4f}".format(test_metrics["test_loss"])
-        )
+        print("Loss {:.4f}".format(test_metrics["test_loss"]))
         save_results(fold + 1, test_metrics, conf_mat.cpu().numpy(), config)
 
 
