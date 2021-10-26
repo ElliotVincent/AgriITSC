@@ -158,3 +158,35 @@ class DownConvBlock(TemporallySharedBlock):
         out = self.conv1(out)
         out = out + self.conv2(out)
         return out
+
+class UpConvBlock(nn.Module):
+    def __init__(
+        self, d_in, d_out, k, s, p, norm="batch", d_skip=None, padding_mode="reflect"
+    ):
+        super(UpConvBlock, self).__init__()
+        d = d_out if d_skip is None else d_skip
+        self.skip_conv = nn.Sequential(
+            nn.Conv2d(in_channels=d, out_channels=d, kernel_size=1),
+            nn.BatchNorm2d(d),
+            nn.ReLU(),
+        )
+        self.up = nn.Sequential(
+            nn.ConvTranspose2d(
+                in_channels=d_in, out_channels=d_out, kernel_size=k, stride=s, padding=p
+            ),
+            nn.BatchNorm2d(d_out),
+            nn.ReLU(),
+        )
+        self.conv1 = ConvLayer(
+            nkernels=[d_out + d, d_out], norm=norm, padding_mode=padding_mode
+        )
+        self.conv2 = ConvLayer(
+            nkernels=[d_out, d_out], norm=norm, padding_mode=padding_mode
+        )
+
+    def forward(self, input, skip):
+        out = self.up(input)
+        out = torch.cat([out, self.skip_conv(skip)], dim=1)
+        out = self.conv1(out)
+        out = out + self.conv2(out)
+        return out

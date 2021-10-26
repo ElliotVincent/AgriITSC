@@ -9,13 +9,13 @@ from torch.nn import functional as F
 
 import numpy as np
 from abc import ABCMeta, abstractmethod
-from src.model.ltae import LTAE2d
+from src.model.utae import UTAE
 from src.model.blocks import ConvBlock, DownConvBlock
 
 
 N_HIDDEN_UNITS = 128
 N_LAYERS = 2
-N_CLASSES = 4
+N_CLASSES = 20
 
 
 class UPSSITS(nn.Module):
@@ -24,7 +24,6 @@ class UPSSITS(nn.Module):
         input_dim,
         input_size=(128, 128),
         encoder_widths=[64, 64, 64, 128],
-        num_dates=61,
         str_conv_k=4,
         str_conv_s=2,
         str_conv_p=1,
@@ -77,47 +76,29 @@ class UPSSITS(nn.Module):
         self.encoder_widths = encoder_widths
         self.pad_value = pad_value
 
-        self.in_conv = ConvBlock(
-            nkernels=[input_dim] + [encoder_widths[0], encoder_widths[0]],
-            pad_value=pad_value,
-            norm=encoder_norm,
+        self.temporal_encoder = UTAE(
+            input_dim=self.input_dim,
+            encoder_widths=self.encoder_widths,
+            decoder_widths=[32, 32, 64, 128],
+            out_conv=[32, 1],
+            str_conv_k=str_conv_k,
+            str_conv_s=str_conv_s,
+            str_conv_p=str_conv_p,
+            agg_mode="att_group",
+            encoder_norm=encoder_norm,
+            n_head=n_head,
+            d_model=d_model,
+            d_k=d_k,
+            encoder=False,
+            return_maps=False,
+            pad_value=self.pad_value,
             padding_mode=padding_mode,
         )
-        self.down_blocks = nn.ModuleList(
-            DownConvBlock(
-                d_in=encoder_widths[i],
-                d_out=encoder_widths[i + 1],
-                k=str_conv_k,
-                s=str_conv_s,
-                p=str_conv_p,
-                pad_value=pad_value,
-                norm=encoder_norm,
-                padding_mode=padding_mode,
-            )
-            for i in range(self.n_stages - 1)
-        )
 
-        self.temporal_encoder = LTAE2d(
-            in_channels=encoder_widths[-1],
-            d_model=d_model,
-            n_head=n_head,
-            mlp=[d_model, encoder_widths[-1]],
-            return_att=True,
-            d_k=d_k,
-        )
         self.value = value or 0.5
-        self.proto = nn.Parameter(torch.full((1, 1, *self.input_size), self.value, dtype=torch.float))
-        self.feature_size = self.encoder_widths[-1] * (self.input_size[0] // (2**(self.n_stages-1))) ** 2
-        self.regressor_aff_list = [create_mlp(self.feature_size, 6, N_HIDDEN_UNITS, N_LAYERS).cuda()
+        self.feature_size = n_head * (self.input_size[0] // (2**(self.n_stages-1))) ** 2 + 1  # F
+        self.regressor_col_list = [create_mlp(self.feature_size, self.input_dim * 2, N_HIDDEN_UNITS, N_LAYERS).cuda()
                                    for _ in range(N_CLASSES)]
-
-        self.regressor_col_list = [create_mlp(self.feature_size + 1, self.input_dim * 2, N_HIDDEN_UNITS, N_LAYERS).cuda()
-                                   for _ in range(N_CLASSES)]
-        self.register_buffer('identity_aff', torch.cat([torch.eye(2, 2), torch.zeros(2, 1)], dim=1))
-        [regressor[-1].weight.data.zero_() for regressor in self.regressor_aff_list]
-        [regressor[-1].bias.data.zero_() for regressor in self.regressor_aff_list]
-        self.regressor_aff_list = nn.ModuleList(self.regressor_aff_list)
-
         self.register_buffer('identity_col', torch.eye(self.input_dim, self.input_dim))
         [regressor[-1].weight.data.zero_() for regressor in self.regressor_col_list]
         [regressor[-1].bias.data.zero_() for regressor in self.regressor_col_list]
@@ -125,57 +106,28 @@ class UPSSITS(nn.Module):
 
         self.criterion = nn.MSELoss(reduction='none')
 
-    def forward(self, input, segm_maps, batch_positions=None, return_att=False):
+    def forward(self, input, batch_positions=None, return_att=True):
+        intensity_map, att = self.temporal_encoder(input, batch_positions, return_att)
         device = input.device
-        identity_aff = self.identity_aff.to(device)
         identity_col = self.identity_col.to(device)
-        zero = torch.zeros((N_CLASSES, batch_positions.shape[1], self.input_dim, *self.input_size)).to(device)
+        num_dates = batch_positions.shape[1]
+        batch_size = batch_positions.shape[0]
         batch_positions = batch_positions.float()
-        pad_mask = ((input == self.pad_value).all(dim=-1).all(dim=-1).all(dim=-1))  # BxT pad mask
-        out = self.in_conv.smart_forward(input)
-        feature_maps = [out]
-        # SPATIAL ENCODER
-        for i in range(self.n_stages - 1):
-            out = self.down_blocks[i].smart_forward(feature_maps[-1])
-            feature_maps.append(out)
-        # TEMPORAL ENCODER
-        out, att = self.temporal_encoder(feature_maps[-1], batch_positions=batch_positions, pad_mask=pad_mask)
-        batch_size = input.shape[0]
-        features = out.reshape(batch_size, -1)
-        n_segm = [int(torch.max(segm_maps[k]).cpu()) + 1 for k in range(batch_size)]
-        output = []
-        for input_id in range(batch_size):
-            curr_input = input[input_id]
-            feature = features[input_id]
-            segm_map = segm_maps[input_id]
-            feature_dates = torch.cat([feature.expand(batch_positions.shape[1], -1),
-                                       batch_positions[input_id].unsqueeze(1)], dim=-1) # T x F
-            segm_list = [zero[0].unsqueeze(0)]
-            for segm_id in range(1, n_segm[input_id]):
-                beta_list_aff = [regressor_aff(feature).view(-1, 2, 3) + identity_aff for regressor_aff
-                                in self.regressor_aff_list]
-                grid_list = [F.affine_grid(beta, [self.proto.size(0), self.proto.size(1), self.input_size[0], self.input_size[1]],
-                                           align_corners=False) for beta in beta_list_aff]
-                transf_proto_list = torch.stack([F.grid_sample(self.proto, grid, mode='bilinear',
-                                                               padding_mode='border', align_corners=False)
-                                                 for grid in grid_list], dim=0).expand(-1, batch_positions.shape[1], -1, -1, -1)  # K x T x 1 x H x W
-                transf_proto_list = transf_proto_list.expand(-1, -1, self.input_dim, -1, -1)  # K x T x C x H x W
-                beta_list_col = [regressor_col(feature_dates) for regressor_col in self.regressor_col_list]
-                weight_bias_list = [torch.split(beta_col.view(-1, self.input_dim, 2), [1, 1], dim=2) for beta_col
-                                   in beta_list_col]
-                weight_bias_list = [[w.expand(-1, -1, self.input_dim) * identity_col + identity_col,
-                                    b.unsqueeze(-1).expand(-1, -1, transf_proto_list.size(3),
-                                                           transf_proto_list.size(4))] for w, b in weight_bias_list]
-                transf_proto = torch.stack([torch.einsum('bij, bjkl -> bikl', w, transf_proto_list[k]) + b
-                                      for k, (w, b) in enumerate(weight_bias_list)], dim=0)  # K x T x C x H x W
-                masked_transf_proto = torch.where(segm_map == segm_id, transf_proto, zero)
-                masked_input = torch.where(segm_map == segm_id, curr_input.unsqueeze(0).repeat((N_CLASSES, 1, 1, 1, 1)), zero)
-                temporal_sum_loss = self.criterion(masked_input, masked_transf_proto).flatten(2).mean(2).sum(1)
-                selected_crop = torch.index_select(masked_transf_proto, 0, torch.argmin(temporal_sum_loss))  # T x C x H x W
-                segm_list.append(selected_crop)
-            output.append(torch.sum(torch.cat(segm_list, dim=0), dim=0, keepdim=True))
-        output = torch.cat(output, dim=0) # B x T x C x H x W
-        return output
+        att = att.permute(1, 2, 0, 3, 4).reshape(batch_size, num_dates, -1)
+        out = intensity_map.unsqueeze(1).expand(-1, num_dates, self.input_dim, -1, -1)
+        feature_dates = torch.cat([att, batch_positions.unsqueeze(2)], dim=-1)  # .view(batch_size * num_dates, -1)  # B x T x F
+        beta_list_col = [regressor_col(feature_dates) for regressor_col in self.regressor_col_list]
+        weight_bias_list = [torch.split(beta_col.view(batch_size, num_dates, self.input_dim, 2), [1, 1], dim=3) for beta_col
+                            in beta_list_col]
+        weight_bias_list = [[w.expand(-1, -1, -1, self.input_dim) * identity_col + identity_col,
+                             b.unsqueeze(-1).expand(-1, -1, -1, out.size(3),
+                                                    out.size(4))] for w, b in weight_bias_list]
+        recons = torch.stack([torch.einsum('btij, btjkl -> btikl', w, out) + b
+                                    for w, b in weight_bias_list], dim=1)  # B x K x T x C x H x W
+        temporal_sum_loss = self.criterion(input.unsqueeze(1), recons).mean(2, keepdim=True)
+        _, indices = torch.min(temporal_sum_loss, 1, keepdim=True)
+        output = torch.gather(recons, 1, indices.expand(-1, -1, num_dates, -1, -1, -1)).squeeze(1)
+        return output, intensity_map
 
 
 class Identity(nn.Module):

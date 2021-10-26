@@ -4,8 +4,7 @@ def get_model(config):
     if config.model == "upssits":
         model = upssits.UPSSITS(
             input_dim=10,
-            input_size=(64, 64),
-            num_dates=61,
+            input_size=(128, 128),
             encoder_widths=config.encoder_widths,
             str_conv_k=config.str_conv_k,
             str_conv_s=config.str_conv_s,

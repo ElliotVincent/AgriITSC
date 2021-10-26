@@ -301,7 +301,7 @@ class PASTIS_Dataset(tdata.Dataset):
             data = data[self.sats[0]]
             dates = dates[self.sats[0]]
 
-        return (data[:, :, :64, :64], dates), target[:64, :64]
+        return (data[:, :, :, :], dates), target[:, :]
 
 
 def prepare_dates(date_dict, reference_date):
