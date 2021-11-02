@@ -202,7 +202,7 @@ def save_results(fold, metrics, conf_mat, config):
 
 
 def norm_quantile(I, min=0.05, max=0.95):
-    return np.clip((I - np.quantile(I, min))/(np.quantile(I, max) - np.quantile(I, min)), 0, 1)**1.3
+    return np.clip((I - np.quantile(I, min))/(np.quantile(I, max) - np.quantile(I, min)), 0, 1)**0.5
 
 
 def main(config):

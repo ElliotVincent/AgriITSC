@@ -124,6 +124,7 @@ class UPSSITS(nn.Module):
             temporal_sum_loss = self.criterion(input.unsqueeze(1), recons).mean(3, keepdim=True).mean(2, keepdim=True)
             _, indices = torch.min(temporal_sum_loss, 1, keepdim=True)
         output = torch.gather(recons, 1, indices.expand(-1, -1, num_dates, self.input_dim, -1, -1)).squeeze(1)
+        indices = indices.squeeze().unsqueeze(0)
         if return_recons:
             return output, intensity_map, recons, indices
         else:
