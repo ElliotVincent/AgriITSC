@@ -257,11 +257,14 @@ class PASTIS_Dataset(tdata.Dataset):
                 instance_ids = np.load(
                     os.path.join(
                         self.folder,
-                        "INSTANCE_ANNOTATIONS",
-                        "INSTANCES_{}.npy".format(id_patch),
+                        "ANNOTATIONS",
+                        "TARGET_{}.npy".format(id_patch),
                     )
                 )
-                target = torch.from_numpy(instance_ids.astype(int))
+                target = torch.from_numpy(instance_ids[0].astype(int))
+
+                if self.class_mapping is not None:
+                    target = self.class_mapping(target)
 
             if self.cache:
                 if self.mem16:
@@ -301,7 +304,7 @@ class PASTIS_Dataset(tdata.Dataset):
             data = data[self.sats[0]]
             dates = dates[self.sats[0]]
 
-        return (data[:, :, :, :], dates), target[:, :]
+        return (data, dates.float() / 426.), target
 
 
 def prepare_dates(date_dict, reference_date):

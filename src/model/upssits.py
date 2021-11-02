@@ -5,12 +5,7 @@ License: MIT
 """
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
-
-import numpy as np
-from abc import ABCMeta, abstractmethod
 from src.model.utae import UTAE
-from src.model.blocks import ConvBlock, DownConvBlock
 
 
 N_HIDDEN_UNITS = 128
@@ -106,48 +101,38 @@ class UPSSITS(nn.Module):
 
         self.criterion = nn.MSELoss(reduction='none')
 
-    def forward(self, input, batch_positions=None, return_att=True):
+    def forward(self, input, gt_map, batch_positions=None, return_att=True, return_recons=False, use_gt=True):
         intensity_map, att = self.temporal_encoder(input, batch_positions, return_att)
         device = input.device
         identity_col = self.identity_col.to(device)
         num_dates = batch_positions.shape[1]
         batch_size = batch_positions.shape[0]
-        batch_positions = batch_positions.float()
         att = att.permute(1, 2, 0, 3, 4).reshape(batch_size, num_dates, -1)
         out = intensity_map.unsqueeze(1).expand(-1, num_dates, self.input_dim, -1, -1)
-        feature_dates = torch.cat([att, batch_positions.unsqueeze(2)], dim=-1)  # .view(batch_size * num_dates, -1)  # B x T x F
+        feature_dates = torch.cat([att, batch_positions.unsqueeze(2)], dim=-1)  # B x T x F
         beta_list_col = [regressor_col(feature_dates) for regressor_col in self.regressor_col_list]
-        weight_bias_list = [torch.split(beta_col.view(batch_size, num_dates, self.input_dim, 2), [1, 1], dim=3) for beta_col
-                            in beta_list_col]
+        weight_bias_list = [torch.split(beta_col.view(batch_size, num_dates, self.input_dim, 2),
+                                        [1, 1], dim=3) for beta_col in beta_list_col]
         weight_bias_list = [[w.expand(-1, -1, -1, self.input_dim) * identity_col + identity_col,
                              b.unsqueeze(-1).expand(-1, -1, -1, out.size(3),
                                                     out.size(4))] for w, b in weight_bias_list]
         recons = torch.stack([torch.einsum('btij, btjkl -> btikl', w, out) + b
                                     for w, b in weight_bias_list], dim=1)  # B x K x T x C x H x W
-        temporal_sum_loss = self.criterion(input.unsqueeze(1), recons).mean(2, keepdim=True)
-        _, indices = torch.min(temporal_sum_loss, 1, keepdim=True)
-        output = torch.gather(recons, 1, indices.expand(-1, -1, num_dates, -1, -1, -1)).squeeze(1)
-        return output, intensity_map
+        if use_gt:
+            indices = gt_map.unsqueeze(1).unsqueeze(1).unsqueeze(1)
+        else:
+            temporal_sum_loss = self.criterion(input.unsqueeze(1), recons).mean(3, keepdim=True).mean(2, keepdim=True)
+            _, indices = torch.min(temporal_sum_loss, 1, keepdim=True)
+        output = torch.gather(recons, 1, indices.expand(-1, -1, num_dates, self.input_dim, -1, -1)).squeeze(1)
+        if return_recons:
+            return output, intensity_map, recons, indices
+        else:
+            return output, intensity_map
 
 
-class Identity(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-
-    def forward(self, x, *args, **kwargs):
-        return x
-
-
-def create_mlp(in_ch, out_ch, n_hidden_units, n_layers, norm_layer=None):
-    if norm_layer is None or norm_layer in ['id', 'identity']:
-        norm_layer = Identity
-    elif norm_layer in ['batch_norm', 'bn']:
-        norm_layer = nn.BatchNorm1d
-    elif not norm_layer == nn.BatchNorm1d:
-        raise NotImplementedError
-
+def create_mlp(in_ch, out_ch, n_hidden_units, n_layers):
     if n_layers > 0:
-        seq = [nn.Linear(in_ch, n_hidden_units), norm_layer(n_hidden_units), nn.ReLU(True)]
+        seq = [nn.Linear(in_ch, n_hidden_units), nn.ReLU(True)]
         for _ in range(n_layers - 1):
             seq += [nn.Linear(n_hidden_units, n_hidden_units), nn.ReLU(True)]
         seq += [nn.Linear(n_hidden_units, out_ch)]

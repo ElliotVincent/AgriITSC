@@ -9,6 +9,7 @@ import os
 import pickle as pkl
 import pprint
 import time
+import datetime
 
 import numpy as np
 import torch
@@ -16,10 +17,12 @@ import torch.nn as nn
 import torch.utils.data as data
 import torchnet as tnt
 import visdom
+import matplotlib.cm as cm
 
 from src.utils import utils, model_utils
 from src.dataset.pastis import PASTIS_Dataset
 from src.model.weight_init import weight_init
+
 
 parser = argparse.ArgumentParser()
 # Model parameters
@@ -27,7 +30,7 @@ parser.add_argument(
     "--model",
     default="upssits",
     type=str,
-    help="Type of architecture to use. Can be one of: (utae/unet3d/fpn/convlstm/convgru/uconvlstm/buconvlstm)",
+    help="Type of architecture to use.",
 )
 ## U-TAE Hyperparameters
 parser.add_argument("--encoder_widths", default="[64,64,64,128]", type=str)
@@ -76,7 +79,7 @@ parser.add_argument(
 # Training parameters
 parser.add_argument("--epochs", default=100, type=int, help="Number of epochs per fold")
 parser.add_argument("--batch_size", default=4, type=int, help="Batch size")
-parser.add_argument("--lr", default=0.001, type=float, help="Learning rate")
+parser.add_argument("--lr", default=0.0001, type=float, help="Learning rate")
 parser.add_argument("--mono_date", default=None, type=str)
 parser.add_argument("--ref_date", default="2018-09-01", type=str)
 parser.add_argument(
@@ -119,10 +122,10 @@ def iterate(
         y = y.long()
         if mode != "train":
             with torch.no_grad():
-                out, intensity_map = model(x, batch_positions=dates)
+                out, intensity_map = model(x, y, batch_positions=dates, use_gt=True)
         else:
             optimizer.zero_grad()
-            out, intensity_map = model(x, batch_positions=dates)
+            out, intensity_map = model(x, y, batch_positions=dates, use_gt=True)
         loss = criterion(out, x).flatten(2).mean(2).mean(1).mean()
 
         if mode == "train":
@@ -130,22 +133,28 @@ def iterate(
             optimizer.step()
         loss_meter.add(loss.item())
 
-        if (i + 1) % 100 == 0:
+        if (i+1) % 300 == 0 and mode == "train":
             print("Step [{}/{}], Loss: {:.4f}".format(i + 1, len(data_loader), loss_meter.value()[0]))
-            if mode == "train":
-                indices = np.random.randint(0, x.shape[1], x.shape[0])
-                select_in = np.squeeze(np.take_along_axis(norm_quantile(x.cpu().numpy()[:, :, :3, :, :]),
-                                               np.expand_dims(indices, (1, 2, 3, 4)), axis=1))
-                select_out = np.squeeze(np.take_along_axis(norm_quantile(out.detach().cpu().numpy()[:, :, :3, :, :]),
-                                                np.expand_dims(indices, (1, 2, 3, 4)), axis=1))
-                intensity_map = intensity_map.expand(-1, 3, -1, -1).detach().cpu()
-                img = torch.cat([torch.tensor(select_in), torch.tensor(select_out), intensity_map], dim=0).numpy()
-                r_in, g_in, b_in = img[:, 2, :, :], img[:, 1, :, :], img[:, 0, :, :]
-                img = np.stack((r_in, g_in, b_in), axis=1)
-                viz.images(img, win='Images', nrow=4, opts=dict(caption='Training samples', store_history=True))
-                viz.line([[loss_meter.value()[0]]], [(epoch-1) * 363 + i], win='Train', update='append')
-            elif mode == "val":
-                viz.line([[loss_meter.value()[0]]], [epoch-1], win='Val', update='append')
+            colours = cm.get_cmap('gist_rainbow', config.num_classes)
+            cmap = colours(np.linspace(0, 1, config.num_classes))  # Obtain RGB colour map
+            cmap[:, -1] = 1
+            gt_map = y.detach().cpu().numpy()
+            gt_map = cmap[gt_map]
+            gt_map = np.transpose(gt_map.reshape((x.shape[0], x.shape[3], x.shape[4], -1)), (0, 3, 1, 2))[:, :3, :, :]
+            indices = np.random.randint(0, x.shape[1], x.shape[0])
+            select_in = np.squeeze(np.take_along_axis(norm_quantile(x.cpu().numpy()[:, :, :3, :, :]),
+                                                      np.expand_dims(indices, (1, 2, 3, 4)), axis=1))
+            select_out = np.squeeze(np.take_along_axis(norm_quantile(out.detach().cpu().numpy()[:, :, :3, :, :]),
+                                                       np.expand_dims(indices, (1, 2, 3, 4)), axis=1))
+            intensity_map = intensity_map.expand(-1, 3, -1, -1).detach().cpu()
+            img = torch.cat([torch.tensor(select_in), torch.tensor(select_out),
+                             intensity_map, torch.tensor(gt_map).float()], dim=0).numpy()
+            r_in, g_in, b_in = img[:, 2, :, :], img[:, 1, :, :], img[:, 0, :, :]
+            img = np.stack((r_in, g_in, b_in), axis=1)
+            viz.images(img, win='Images', nrow=4, opts=dict(caption='Training samples', store_history=True))
+            viz.line([[loss_meter.value()[0]]], [epoch-1], win='Train', update='append')
+        elif (i+1) % 100 == 0 and mode == "val":
+            viz.line([[loss_meter.value()[0]]], [epoch-1], win='Val', update='append')
 
     t_end = time.time()
     total_time = t_end - t_start
@@ -191,13 +200,15 @@ def save_results(fold, metrics, conf_mat, config):
         ),
     )
 
+
 def norm_quantile(I, min=0.05, max=0.95):
     return np.clip((I - np.quantile(I, min))/(np.quantile(I, max) - np.quantile(I, min)), 0, 1)**1.3
 
+
 def main(config):
-    viz = visdom.Visdom(port=8889, env='ups-sits')
-    viz.line([[0.]], [0], win='Train', opts=dict(title='Train loss', legend=['train loss']))
-    viz.line([[0.]], [0], win='Val', opts=dict(title='Val loss', legend=['val loss']))
+    exp_id = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    config.res_dir = '{}-{}'.format(config.res_dir, exp_id)
+
     if torch.cuda.is_available():
         type_device = "cuda"
         nb_device = torch.cuda.device_count()
@@ -225,7 +236,9 @@ def main(config):
     for fold, (train_folds, val_fold, test_fold) in enumerate(fold_sequence):
         if config.fold is not None:
             fold = config.fold - 1
-
+        viz = visdom.Visdom(port=8889, env='ups-sits_{}_fold_{}'.format(exp_id, fold))
+        viz.line([[0.]], [0], win='Train', opts=dict(title='Train loss', legend=['train loss']))
+        viz.line([[0.]], [0], win='Val', opts=dict(title='Val loss', legend=['val loss']))
         # Dataset definition
         dt_args = dict(
             folder=config.dataset_folder,
@@ -351,7 +364,7 @@ def main(config):
         )
         model.eval()
 
-        test_metrics, conf_mat = iterate(
+        test_metrics, _ = iterate(
             model,
             data_loader=test_loader,
             criterion=criterion,
@@ -362,7 +375,6 @@ def main(config):
             device=device,
         )
         print("Loss {:.4f}".format(test_metrics["test_loss"]))
-        save_results(fold + 1, test_metrics, conf_mat.cpu().numpy(), config)
 
 
 if __name__ == "__main__":
