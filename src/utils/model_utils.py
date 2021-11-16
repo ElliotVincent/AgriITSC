@@ -15,6 +15,7 @@ def get_model(config):
             d_k=config.d_k,
             pad_value=config.pad_value,
             padding_mode=config.padding_mode,
+            constant_map=config.constant_intensity_map,
         )
         return model
     else:

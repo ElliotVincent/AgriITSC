@@ -222,3 +222,25 @@ class IoU(Metric):
         acc = float(np.diag(conf_matrix).sum() / conf_matrix.sum() * 100)
 
         return miou, acc
+
+
+class UseRate(Metric):
+    def __init__(self):
+        super().__init__()
+        self.rates = 0.
+        self.total = 0.
+
+    def add(self, mask, dates):
+        num_dates = (dates > 0).sum(1)
+        num_selected_dates = mask.sum(1)
+        use_rate = torch.div(num_selected_dates.float(), num_dates.float())
+
+        self.rates += torch.sum(use_rate)
+        self.total += use_rate.numel()
+
+    def value(self):
+        return (self.rates / self.total).cpu().numpy()
+
+    def reset(self):
+        self.rates = 0.
+        self.total = 0.

@@ -160,7 +160,7 @@ class UTAE(nn.Module):
         else:
             out = self.out_conv(out)
             if return_att:
-                return out, att
+                return out, att, maps[0]
             if self.return_maps:
                 return out, maps
             else:

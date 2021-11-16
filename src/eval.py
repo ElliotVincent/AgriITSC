@@ -15,7 +15,6 @@ import torch.utils.data as data
 import torchnet as tnt
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
-from scipy.optimize import linear_sum_assignment
 from src.utils.metrics import IoU
 from src.utils import utils, model_utils
 from src.dataset.pastis import PASTIS_Dataset
@@ -57,7 +56,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--res_dir",
-    default="./results-2021-10-28-19-16-04",
+    default="./results-2021-11-02-17-55-34",
     help="Path to the folder where the results should be stored",
 )
 parser.add_argument(
@@ -176,7 +175,7 @@ def save_images(batch_id, inp, out, recons, intensity_map, indices, config, y, f
         for j in range(nt_steps):
             img_path = os.path.join(curr_path, '{}_{}.png'.format(name, j))
             plt.imsave(img_path, np.transpose(img[i * nt_steps + j], (1, 2, 0)))
-    colours = cm.get_cmap('gist_rainbow', N_CLASSES)
+    colours = cm.get_cmap('nipy_spectral', N_CLASSES)
     cmap = colours(np.linspace(0, 1, N_CLASSES))  # Obtain RGB colour map
     cmap[:, -1] = 1
     indices = indices[0].detach().cpu().numpy()
@@ -203,7 +202,7 @@ def recursive_todevice(x, device):
 
 
 def norm_quantile(I, min=0.05, max=0.95):
-    return np.clip((I - np.quantile(I, min))/(np.quantile(I, max) - np.quantile(I, min)), 0, 1)**1.3
+    return np.clip((I - np.quantile(I, min))/(np.quantile(I, max) - np.quantile(I, min)), 0, 1)**0.5
 
 
 def main(config):
@@ -228,7 +227,7 @@ def main(config):
     fold_sequence = (
         fold_sequence if config.fold is None else [fold_sequence[config.fold - 1]]
     )
-    for fold, (train_folds, val_fold, test_fold) in enumerate(fold_sequence):
+    for fold, (_, _, test_fold) in enumerate(fold_sequence):
         if config.fold is not None:
             fold = config.fold - 1
 

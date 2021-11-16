@@ -65,10 +65,16 @@ parser.add_argument(
     help="Name of device to use for tensor computations (cuda/cpu)",
 )
 parser.add_argument(
-    "--display_step",
-    default=50,
+    "--vis_step",
+    default=100,
     type=int,
-    help="Interval in batches between display of training metrics",
+    help="Interval in batches between display visualization in visdom",
+)
+parser.add_argument(
+    "--check_cluster_step",
+    default=25,
+    type=int,
+    help="Interval in batches between reassignment of empty clusters",
 )
 parser.add_argument(
     "--cache",
@@ -77,9 +83,9 @@ parser.add_argument(
     help="If specified, the whole dataset is kept in RAM",
 )
 # Training parameters
-parser.add_argument("--epochs", default=100, type=int, help="Number of epochs per fold")
+parser.add_argument("--epochs", default=200, type=int, help="Number of epochs per fold")
 parser.add_argument("--batch_size", default=4, type=int, help="Batch size")
-parser.add_argument("--lr", default=0.0001, type=float, help="Learning rate")
+parser.add_argument("--lr", default=0.001, type=float, help="Learning rate")
 parser.add_argument("--mono_date", default=None, type=str)
 parser.add_argument("--ref_date", default="2018-09-01", type=str)
 parser.add_argument(
@@ -89,6 +95,18 @@ parser.add_argument(
     help="Do only one of the five fold (between 1 and 5)",
 )
 parser.add_argument("--num_classes", default=20, type=int)
+parser.add_argument(
+    "--use_gt",
+    default=False,
+    type=bool,
+    help="Whether to use GT segmentation during training or not"
+)
+parser.add_argument(
+    "--constant_intensity_map",
+    default=False,
+    type=bool,
+    help="Whether to learn the intensity map or not"
+)
 parser.add_argument("--ignore_index", default=-1, type=int)
 parser.add_argument("--pad_value", default=0, type=float)
 parser.add_argument("--padding_mode", default="reflect", type=str)
@@ -110,9 +128,14 @@ parser.set_defaults(cache=False)
 
 
 def iterate(
-    model, viz, data_loader, criterion, epoch, optimizer=None, mode="train", device=None
+    model, vis, data_loader, criterion, epoch, optimizer=None, mode="train", device=None, n_batches=0,
 ):
     loss_meter = tnt.meter.AverageValueMeter()
+
+    if not config.use_gt:
+        # Store the class proportions in a dictionary
+        proportions_meters = {f'prop_clus{class_id}': tnt.meter.AverageValueMeter()
+                              for class_id in range(config.num_classes)}
 
     t_start = time.time()
     for i, batch in enumerate(data_loader):
@@ -122,18 +145,36 @@ def iterate(
         y = y.long()
         if mode != "train":
             with torch.no_grad():
-                out, intensity_map = model(x, y, batch_positions=dates, use_gt=True)
+                out, intensity_map, pred_seg, mask = model(x, y, batch_positions=dates, use_gt=config.use_gt)
         else:
             optimizer.zero_grad()
-            out, intensity_map = model(x, y, batch_positions=dates, use_gt=True)
-        loss = criterion(out, x).flatten(2).mean(2).mean(1).mean()
+            out, intensity_map, pred_seg, mask = model(x, y, batch_positions=dates, use_gt=config.use_gt)
+        loss = criterion(mask * out, mask * x).flatten(2).mean(2).mean(1).mean()
 
         if mode == "train":
             loss.backward()
             optimizer.step()
         loss_meter.add(loss.item())
 
-        if (i+1) % 300 == 0 and mode == "train":
+        if not config.use_gt:
+            elem, elem_counts = torch.unique(pred_seg, return_counts=True)
+            curr_proportions = {elem[j].cpu().int().item(): (elem_counts[k].item()/torch.sum(elem_counts).item())
+                                for j in range(elem.shape[0])}
+            proportions = {f'prop_clus{class_id}': curr_proportions[class_id] if class_id in curr_proportions.keys() else 0.
+                           for class_id in range(config.num_classes)}
+            for class_id in range(config.num_classes):
+                proportions_meters[f'prop_clus{class_id}'].add(proportions[f'prop_clus{class_id}'])
+
+            if (i+1) % config.check_cluster_step == 0 and mode == "train":
+                proportions = [proportions_meters[f'prop_clus{class_id}'].value()[0]
+                               for class_id in range(config.num_classes)]
+                reassigned, idx = model.module.reassign_empty_clusters(proportions)
+                print("Epoch [{}/{}], Iter {}: Reassigned clusters {} from cluster {}".format(epoch, config.epochs, i,
+                                                                                              reassigned, idx))
+                for class_id in range(config.num_classes):
+                    proportions_meters[f'prop_clus{class_id}'].reset()
+
+        if (i+1) % config.vis_step == 0 and mode == "train":
             print("Step [{}/{}], Loss: {:.4f}".format(i + 1, len(data_loader), loss_meter.value()[0]))
             colours = cm.get_cmap('gist_rainbow', config.num_classes)
             cmap = colours(np.linspace(0, 1, config.num_classes))  # Obtain RGB colour map
@@ -141,20 +182,31 @@ def iterate(
             gt_map = y.detach().cpu().numpy()
             gt_map = cmap[gt_map]
             gt_map = np.transpose(gt_map.reshape((x.shape[0], x.shape[3], x.shape[4], -1)), (0, 3, 1, 2))[:, :3, :, :]
+            pred_map = pred_seg.detach().cpu()
+            pred_map = cmap[pred_map]
+            pred_map = np.transpose(pred_map.reshape((x.shape[0], x.shape[3], x.shape[4], -1)), (0, 3, 1, 2))[:, :3, :, :]
             indices = np.random.randint(0, x.shape[1], x.shape[0])
-            select_in = np.squeeze(np.take_along_axis(norm_quantile(x.cpu().numpy()[:, :, :3, :, :]),
+            normalized_x, used_min, used_max = norm_quantile(x.cpu().numpy()[:, :, :3, :, :])
+            normalized_out = norm_quantile(out.detach().cpu().numpy()[:, :, :3, :, :],
+                                           given_min=used_min,
+                                           given_max=used_max)
+            select_in = np.squeeze(np.take_along_axis(normalized_x,
                                                       np.expand_dims(indices, (1, 2, 3, 4)), axis=1))
-            select_out = np.squeeze(np.take_along_axis(norm_quantile(out.detach().cpu().numpy()[:, :, :3, :, :]),
+            select_out = np.squeeze(np.take_along_axis(normalized_out,
                                                        np.expand_dims(indices, (1, 2, 3, 4)), axis=1))
             intensity_map = intensity_map.expand(-1, 3, -1, -1).detach().cpu()
             img = torch.cat([torch.tensor(select_in), torch.tensor(select_out),
-                             intensity_map, torch.tensor(gt_map).float()], dim=0).numpy()
+                             intensity_map, torch.tensor(gt_map).float(),
+                             torch.tensor(pred_map).float()], dim=0).numpy()
             r_in, g_in, b_in = img[:, 2, :, :], img[:, 1, :, :], img[:, 0, :, :]
             img = np.stack((r_in, g_in, b_in), axis=1)
-            viz.images(img, win='Images', nrow=4, opts=dict(caption='Training samples', store_history=True))
-            viz.line([[loss_meter.value()[0]]], [epoch-1], win='Train', update='append')
+            vis.images(img, win='Images', nrow=4, opts=dict(caption='Training samples', store_history=True))
+            vis.line([[loss_meter.value()[0]]],
+                     [(epoch - 1) * n_batches // config.vis_step + (i+1) // config.vis_step - 1],
+                     win='Train', update='append')
+
         elif (i+1) % 100 == 0 and mode == "val":
-            viz.line([[loss_meter.value()[0]]], [epoch-1], win='Val', update='append')
+            vis.line([[loss_meter.value()[0]]], [epoch-1], win='Val', update='append')
 
     t_end = time.time()
     total_time = t_end - t_start
@@ -163,7 +215,9 @@ def iterate(
         "{}_loss".format(mode): loss_meter.value()[0],
         "{}_epoch_time".format(mode): total_time,
     }
-    return metrics, viz
+    if not config.use_gt:
+        metrics.update({f'prop_clus{class_id}': proportions_meters[f'prop_clus{class_id}'].value()[0] for class_id in range(config.num_classes)})
+    return metrics, vis
 
 
 def recursive_todevice(x, device):
@@ -201,8 +255,13 @@ def save_results(fold, metrics, conf_mat, config):
     )
 
 
-def norm_quantile(I, min=0.05, max=0.95):
-    return np.clip((I - np.quantile(I, min))/(np.quantile(I, max) - np.quantile(I, min)), 0, 1)**0.5
+def norm_quantile(I, min_alpha=0.05, max_alpha=0.95, given_min=None, given_max=None):
+    if (given_min is not None) and (given_max is not None):
+        return np.clip((I - given_min)/(given_max - given_min), 0, 1)**0.5
+    else:
+        used_min = np.quantile(I, min_alpha)
+        used_max = np.quantile(I, max_alpha)
+        return np.clip((I - used_min)/(used_max - used_min), 0, 1)**0.5, used_min, used_max
 
 
 def main(config):
@@ -236,9 +295,9 @@ def main(config):
     for fold, (train_folds, val_fold, test_fold) in enumerate(fold_sequence):
         if config.fold is not None:
             fold = config.fold - 1
-        viz = visdom.Visdom(port=8889, env='ups-sits_{}_fold_{}'.format(exp_id, fold))
-        viz.line([[0.]], [0], win='Train', opts=dict(title='Train loss', legend=['train loss']))
-        viz.line([[0.]], [0], win='Val', opts=dict(title='Val loss', legend=['val loss']))
+        vis = visdom.Visdom(port=8889, env='ups-sits_{}_fold_{}'.format(exp_id, fold))
+        vis.line([[0.]], [0], win='Train', opts=dict(title='Train loss', legend=['train loss']))
+        vis.line([[0.]], [0], win='Val', opts=dict(title='Val loss', legend=['val loss']))
         # Dataset definition
         dt_args = dict(
             folder=config.dataset_folder,
@@ -276,9 +335,9 @@ def main(config):
             collate_fn=collate_fn,
         )
 
-        print(
-            "Train {}, Val {}, Test {}".format(len(dt_train), len(dt_val), len(dt_test))
-        )
+        print("Train {}, Val {}, Test {}".format(len(dt_train), len(dt_val), len(dt_test)))
+
+        n_batches = len(dt_train) // config.batch_size
 
         # Model definition
         model = model_utils.get_model(config)
@@ -298,9 +357,8 @@ def main(config):
 
         # Optimizer and Loss
         optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50], gamma=0.1)
 
-        weights = torch.ones(config.num_classes, device=device).float()
-        weights[config.ignore_index] = 0
         criterion = nn.MSELoss(reduction='none')
 
         # Training loop
@@ -310,22 +368,24 @@ def main(config):
             print("EPOCH {}/{}".format(epoch, config.epochs))
 
             model.train()
-            train_metrics, viz = iterate(
+            train_metrics, vis = iterate(
                 model,
-                viz,
+                vis,
                 data_loader=train_loader,
                 criterion=criterion,
                 epoch=epoch,
                 optimizer=optimizer,
                 mode="train",
                 device=device,
+                n_batches=n_batches,
             )
+            scheduler.step()
             if epoch % config.val_every == 0 and epoch > config.val_after:
                 print("Validation . . . ")
                 model.eval()
-                val_metrics, viz = iterate(
+                val_metrics, vis = iterate(
                     model,
-                    viz,
+                    vis,
                     data_loader=val_loader,
                     criterion=criterion,
                     epoch=epoch,
@@ -370,7 +430,7 @@ def main(config):
             criterion=criterion,
             epoch=0,
             optimizer=optimizer,
-            viz=None,
+            vis=None,
             mode="test",
             device=device,
         )
