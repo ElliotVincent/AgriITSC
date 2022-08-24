@@ -1,0 +1,25 @@
+dataset:
+  name: sa
+model:
+  name: means
+  num_classes: 5
+  input_dim: 4
+  num_steps: 244
+  filtering: none
+  sigma: 7
+training:
+  device: cuda
+  loss: recons
+  batch_size: 4
+  n_workers: 4
+  n_epochs: 1
+  optimizer:
+    lr: 1.0e-3
+  scheduler:
+    factor: 0.1
+    patience: 5
+    threshold: 0.0001
+  rdm_seed: 621
+  visualizer_port: 8889
+  pretrained:
+  resume:

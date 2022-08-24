@@ -11,6 +11,236 @@ from src.model.ltae import LTAE2d
 from src.model.blocks import ConvBlock, DownConvBlock, UpConvBlock
 
 
+class SpatE(nn.Module):
+    def __init__(
+        self,
+        input_dim,
+        encoder_widths=[64, 64, 64, 128],
+        str_conv_k=4,
+        str_conv_s=2,
+        str_conv_p=1,
+        encoder_norm="group",
+        encoder=False,
+        return_maps=False,
+        pad_value=0,
+        padding_mode="reflect",
+    ):
+        super(SpatE, self).__init__()
+        self.n_stages = len(encoder_widths)
+        self.return_maps = return_maps
+        self.encoder_widths = encoder_widths
+        self.pad_value = pad_value
+        self.encoder = encoder
+        if encoder:
+            self.return_maps = True
+
+        self.in_conv = ConvBlock(
+            nkernels=[input_dim] + [encoder_widths[0], encoder_widths[0]],
+            pad_value=pad_value,
+            norm=encoder_norm,
+            padding_mode=padding_mode,
+        )
+        self.down_blocks = nn.ModuleList(
+            DownConvBlock(
+                d_in=encoder_widths[i],
+                d_out=encoder_widths[i + 1],
+                k=str_conv_k,
+                s=str_conv_s,
+                p=str_conv_p,
+                pad_value=pad_value,
+                norm=encoder_norm,
+                padding_mode=padding_mode,
+            )
+            for i in range(self.n_stages - 1)
+        )
+
+    def forward(self, input, return_maps=True):
+        out = self.in_conv.smart_forward(input)
+        feature_maps = [out]
+        # SPATIAL ENCODER
+        for i in range(self.n_stages - 1):
+            out = self.down_blocks[i].smart_forward(feature_maps[-1])
+            feature_maps.append(out)
+        if return_maps:
+            return feature_maps
+        else:
+            return feature_maps[-1]
+
+
+class TempE(nn.Module):
+    def __init__(
+        self,
+        encoder_widths=[64, 64, 64, 128],
+        out_dim=2,
+        n_head=16,
+        d_model=256,
+        d_k=4,
+        encoder=False,
+        return_maps=False,
+        pad_value=0,
+        linear=True,
+        # linear_layer=None,
+    ):
+        super(TempE, self).__init__()
+        self.linear = linear
+        self.out_dim = out_dim
+        self.n_stages = len(encoder_widths)
+        self.return_maps = return_maps
+        self.encoder_widths = encoder_widths
+        self.pad_value = pad_value
+        self.encoder = encoder
+        if encoder:
+            self.return_maps = True
+
+        self.temporal_encoder = LTAE2d(
+            in_channels=encoder_widths[-1],
+            d_model=d_model,
+            n_head=n_head,
+            mlp=[d_model, encoder_widths[-1]],
+            return_att=True,
+            d_k=d_k,
+        )
+        if self.linear:
+            # self.out_lin = linear_layer
+            self.out_lin = nn.Linear(self.encoder_widths[-1] * 16 * 16, self.out_dim)
+
+    def forward(self, input, feature_map, batch_positions=None):
+        pad_mask = (
+            (input == self.pad_value).all(dim=-1).all(dim=-1).all(dim=-1)
+        )  # BxT pad mask
+        out, att = self.temporal_encoder(
+            feature_map, batch_positions=batch_positions, pad_mask=pad_mask
+        )
+        if self.linear:
+            out = self.out_lin(out.flatten(1))
+            return out
+        else:
+            return out, att, pad_mask
+
+
+class SpatD(nn.Module):
+    def __init__(
+        self,
+        encoder_widths=[64, 64, 64, 128],
+        decoder_widths=[32, 32, 64, 128],
+        out_dim=2,
+        str_conv_k=4,
+        str_conv_s=2,
+        str_conv_p=1,
+        agg_mode="att_group",
+        padding_mode="reflect",
+    ):
+        super(SpatD, self).__init__()
+        self.n_stages = len(encoder_widths)
+        self.encoder_widths = encoder_widths
+        self.decoder_widths = decoder_widths
+        self.out_dim = out_dim
+        self.up_blocks = nn.ModuleList(
+            UpConvBlock(
+                d_in=decoder_widths[i],
+                d_out=decoder_widths[i - 1],
+                d_skip=encoder_widths[i - 1],
+                k=str_conv_k,
+                s=str_conv_s,
+                p=str_conv_p,
+                norm="batch",
+                padding_mode=padding_mode,
+            )
+            for i in range(self.n_stages - 1, 0, -1)
+        )
+        self.temporal_aggregator = Temporal_Aggregator(mode=agg_mode)
+        self.out_lin = nn.Linear(self.decoder_widths[0], self.out_dim)
+
+    def forward(self, out, feature_maps, att, pad_mask):
+        for i in range(self.n_stages - 1):
+            skip = self.temporal_aggregator(
+                feature_maps[-(i + 2)], pad_mask=pad_mask, attn_mask=att
+            )
+            out = self.up_blocks[i](out, skip)
+        b, h, w = out.size(0), out.size(2), out.size(3)
+        out = self.out_lin(out.permute(0, 2, 3, 1).reshape(b * h * w, self.decoder_widths[0]))
+        out = out.reshape(b, h, w, self.out_dim).permute(0, 3, 1, 2)
+        return out
+
+
+class LTAE(nn.Module):
+    def __init__(
+        self,
+        input_dim,
+        encoder_widths=[64, 64, 64, 128],
+        out_dim=2,
+        str_conv_k=4,
+        str_conv_s=2,
+        str_conv_p=1,
+        agg_mode="att_group",
+        encoder_norm="group",
+        n_head=16,
+        d_model=256,
+        d_k=4,
+        encoder=False,
+        return_maps=False,
+        pad_value=0,
+        padding_mode="reflect",
+    ):
+        super(LTAE, self).__init__()
+        self.n_stages = len(encoder_widths)
+        self.return_maps = return_maps
+        self.out_dim=out_dim
+        self.encoder_widths = encoder_widths
+        self.pad_value = pad_value
+        self.encoder = encoder
+        if encoder:
+            self.return_maps = True
+
+        self.in_conv = ConvBlock(
+            nkernels=[input_dim] + [encoder_widths[0], encoder_widths[0]],
+            pad_value=pad_value,
+            norm=encoder_norm,
+            padding_mode=padding_mode,
+        )
+        self.down_blocks = nn.ModuleList(
+            DownConvBlock(
+                d_in=encoder_widths[i],
+                d_out=encoder_widths[i + 1],
+                k=str_conv_k,
+                s=str_conv_s,
+                p=str_conv_p,
+                pad_value=pad_value,
+                norm=encoder_norm,
+                padding_mode=padding_mode,
+            )
+            for i in range(self.n_stages - 1)
+        )
+
+        self.temporal_encoder = LTAE2d(
+            in_channels=encoder_widths[-1],
+            d_model=d_model,
+            n_head=n_head,
+            mlp=[d_model, encoder_widths[-1]],
+            return_att=True,
+            d_k=d_k,
+        )
+        self.temporal_aggregator = Temporal_Aggregator(mode=agg_mode)
+        self.out_lin = nn.Linear(self.encoder_widths[-1] * 16 * 16, self.out_dim)
+
+    def forward(self, input, batch_positions=None):
+        pad_mask = (
+            (input == self.pad_value).all(dim=-1).all(dim=-1).all(dim=-1)
+        )  # BxT pad mask
+        out = self.in_conv.smart_forward(input)
+        feature_maps = [out]
+        # SPATIAL ENCODER
+        for i in range(self.n_stages - 1):
+            out = self.down_blocks[i].smart_forward(feature_maps[-1])
+            feature_maps.append(out)
+        # TEMPORAL ENCODER
+        out, att = self.temporal_encoder(
+            feature_maps[-1], batch_positions=batch_positions, pad_mask=pad_mask
+        )
+        out = self.out_lin(out.flatten(1))
+        return out
+
+
 class UTAE(nn.Module):
     def __init__(
         self,
@@ -160,7 +390,7 @@ class UTAE(nn.Module):
         else:
             out = self.out_conv(out)
             if return_att:
-                return out, att, maps[0]
+                return out, att
             if self.return_maps:
                 return out, maps
             else:
@@ -394,3 +624,14 @@ class RecUNet(nn.Module):
                 return out, maps
             else:
                 return out
+
+
+def create_mlp(in_ch, out_ch, n_hidden_units, n_layers):
+    if n_layers > 0:
+        seq = [nn.Linear(in_ch, n_hidden_units), nn.ReLU(True)]
+        for _ in range(n_layers - 1):
+            seq += [nn.Linear(n_hidden_units, n_hidden_units), nn.ReLU(True)]
+        seq += [nn.Linear(n_hidden_units, out_ch)]
+    else:
+        seq = [nn.Linear(in_ch, out_ch)]
+    return nn.Sequential(*seq)

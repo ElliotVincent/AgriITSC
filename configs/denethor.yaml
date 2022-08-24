@@ -1,0 +1,30 @@
+dataset:
+  name: denethor
+  with_img_id: True
+model:
+  name: kmeans
+  num_classes: 9
+  num_prototypes: 64
+  input_dim: 4
+  num_steps: 365
+  learn_weights: False
+  #num_proto_per_class: 1
+training:
+  device: cuda
+  loss: recons
+  batch_size: 4
+  n_workers: 4
+  optimizer:
+    lr: 1.0e-3
+  scheduler:
+    factor: 0.1
+    patience: 2
+    threshold: 0.0001
+  n_epochs: 10
+  print_step: 250
+  valid_step: 250
+  check_cluster_step: 200
+  rdm_seed: 621
+  visualizer_port: 8889
+  pretrained:
+  resume:

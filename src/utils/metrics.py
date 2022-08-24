@@ -4,6 +4,9 @@ Taken from https://github.com/davidtvs/PyTorch-ENet/blob/master/metric/confusion
 
 import numpy as np
 import torch
+import pandas as pd
+from scipy.optimize import linear_sum_assignment
+from sklearn.cluster import MeanShift, estimate_bandwidth
 
 
 class Metric(object):
@@ -31,17 +34,53 @@ class ConfusionMatrix(Metric):
     Modified from: https://github.com/pytorch/tnt/blob/master/torchnet/meter/confusionmeter.py
     """
 
-    def __init__(self, num_classes, normalized=False, device='cpu', lazy=True):
+    def __init__(self, num_classes, num_prototypes, normalized=False, device='cpu', lazy=True):
         super().__init__()
         if device == 'cpu':
-            self.conf = np.ndarray((num_classes, num_classes), dtype=np.int64)
+            self.conf = np.ndarray((num_classes, num_prototypes), dtype=np.int64)
         else:
-            self.conf = torch.zeros((num_classes, num_classes)).cuda()
+            self.conf = torch.zeros((num_classes, num_prototypes)).cuda()
         self.normalized = normalized
         self.num_classes = num_classes
+        self.num_prototypes = num_prototypes
         self.device = device
         self.reset()
         self.lazy = lazy
+        self.purity_conf = None
+        self.meanshift_conf = None
+
+
+    def purity_assignment(self, matching=None):
+        conf_matrix = np.zeros((self.num_classes, self.num_classes))
+        if matching is None:
+            matching = np.argmax(self.conf, axis=0)
+        for i, col in enumerate(matching):
+            conf_matrix[:, col] = conf_matrix[:, col] + self.conf[:, i]
+        self.purity_conf = conf_matrix
+        return matching
+
+    def meanshift_assignment(self, model, matching=None):
+        conf_matrix = np.zeros((self.num_classes, self.num_classes))
+        if matching is None:
+            prototypes = model.module.prototypes.flatten(1).detach().cpu().numpy()
+            matching = iterative_mean_shift(self.num_classes, self.num_prototypes, prototypes)
+        for i, col in enumerate(matching):
+            conf_matrix[:, col] = conf_matrix[:, col] + self.conf[:, i]
+        self.meanshift_conf = conf_matrix
+        self.hungarian_match()
+        return matching
+
+    def hungarian_match(self):
+        row_id, col_id = linear_sum_assignment(-self.meanshift_conf)
+        self.meanshift_conf = self.meanshift_conf[:, col_id]
+
+    def get_acc(self):
+        # return float(np.diag(self.meanshift_conf).sum() / self.conf.sum() * 100), \
+        return float(np.diag(self.purity_conf).sum() / self.conf.sum() * 100)
+
+    def get_acc_per_class(self):
+        # return list(np.diag(self.meanshift_conf) / self.conf.sum(1) * 100), \
+        return list(np.diag(self.purity_conf) / self.conf.sum(1) * 100)
 
     def reset(self):
         if self.device == 'cpu':
@@ -96,18 +135,18 @@ class ConfusionMatrix(Metric):
                     'target values are not between 0 and k-1'
 
         # hack for bincounting 2 arrays together
-        x = predicted + self.num_classes * target
+        x = predicted + self.num_prototypes * target
 
         if self.device == 'cpu':
             bincount_2d = np.bincount(
-                x.astype(np.int64), minlength=self.num_classes ** 2)
-            assert bincount_2d.size == self.num_classes ** 2
-            conf = bincount_2d.reshape((self.num_classes, self.num_classes))
+                x.astype(np.int64), minlength=self.num_classes * self.num_prototypes)
+            assert bincount_2d.size == self.num_classes * self.num_prototypes
+            conf = bincount_2d.reshape((self.num_classes, self.num_prototypes))
         else:
             bincount_2d = torch.bincount(
-                x, minlength=self.num_classes ** 2)
+                x, minlength=self.num_classes ** self.num_prototypes)
 
-            conf = bincount_2d.view((self.num_classes, self.num_classes))
+            conf = bincount_2d.view((self.num_classes, self.num_prototypes))
         self.conf += conf
 
     def value(self):
@@ -169,10 +208,10 @@ class IoU(Metric):
         # Dimensions check
         assert predicted.size(0) == target.size(0), \
             'number of targets and predicted outputs do not match'
-        assert predicted.dim() == 3 or predicted.dim() == 4, \
-            "predictions must be of dimension (N, H, W) or (N, K, H, W)"
-        assert target.dim() == 3 or target.dim() == 4, \
-            "targets must be of dimension (N, H, W) or (N, K, H, W)"
+        assert predicted.dim() == 3 or predicted.dim() == 4 or predicted.dim() == 1, \
+            "predictions must be of dimension (N, H, W) or (N, K, H, W) or (N)"
+        assert target.dim() == 3 or target.dim() == 4 or target.dim() == 1, \
+            "targets must be of dimension (N, H, W) or (N, K, H, W) or (N)"
 
         # If the tensor is in categorical format convert it to integer format
         if predicted.dim() == 4:
@@ -220,8 +259,9 @@ class IoU(Metric):
             iou = true_positive / (true_positive + false_positive + false_negative)
         miou = float(np.nanmean(iou) * 100)
         acc = float(np.diag(conf_matrix).sum() / conf_matrix.sum() * 100)
-
-        return miou, acc
+        acc_per_class = [float(conf_matrix[i, i] / conf_matrix[i].sum()) * 100 for i in range(19)]
+        iou_per_class = iou * 100
+        return miou, acc, acc_per_class, iou_per_class[:19]
 
 
 class UseRate(Metric):
@@ -244,3 +284,92 @@ class UseRate(Metric):
     def reset(self):
         self.rates = 0.
         self.total = 0.
+
+
+def confusion_matrix_analysis(mat):
+    """
+    This method computes all the performance metrics from the confusion matrix. In addition to overall accuracy, the
+    precision, recall, f-score and IoU for each class is computed.
+    The class-wise metrics are averaged to provide overall indicators in two ways (MICRO and MACRO average)
+    Args:
+        mat (array): confusion matrix
+    Returns:
+        per_class (dict) : per class metrics
+        overall (dict): overall metrics
+    """
+    TP = 0
+    FP = 0
+    FN = 0
+
+    per_class = {}
+
+    for j in range(mat.shape[0]):
+        d = {}
+        tp = np.sum(mat[j, j])
+        fp = np.sum(mat[:, j]) - tp
+        fn = np.sum(mat[j, :]) - tp
+
+        d['IoU'] = tp / (tp + fp + fn)
+        d['Precision'] = tp / (tp + fp)
+        d['Recall'] = tp / (tp + fn)
+        d['F1-score'] = 2 * tp / (2 * tp + fp + fn)
+
+        per_class[str(j)] = d
+
+        TP += tp
+        FP += fp
+        FN += fn
+
+    overall = {}
+    overall['micro_IoU'] = TP / (TP + FP + FN)
+    overall['micro_Precision'] = TP / (TP + FP)
+    overall['micro_Recall'] = TP / (TP + FN)
+    overall['micro_F1-score'] = 2 * TP / (2 * TP + FP + FN)
+
+    macro = pd.DataFrame(per_class).transpose().mean()
+    overall['MACRO_IoU'] = macro.loc['IoU']
+    overall['MACRO_Precision'] = macro.loc['Precision']
+    overall['MACRO_Recall'] = macro.loc['Recall']
+    overall['MACRO_F1-score'] = macro.loc['F1-score']
+
+    overall['Accuracy'] = np.sum(np.diag(mat)) / np.sum(mat)
+
+    return per_class, overall
+
+
+class CustomMeter:
+    def __init__(
+            self,
+            num_classes=17,
+    ):
+        super(CustomMeter, self).__init__()
+        self.num_classes = num_classes
+        self.vals = [0. for _ in range(self.num_classes)]
+        self.counts = [0. for _ in range(self.num_classes)]
+
+    def add(self, vals, counts):
+        for class_id in range(self.num_classes):
+            self.vals[class_id] += vals[class_id].item()
+            self.counts[class_id] += counts[class_id]
+
+    def value(self, mode='mean'):
+        if mode == 'density':
+            total = sum(self.vals)
+            return [v / total for v in self.vals]
+        return [v / max(c, 1) for v, c in zip(self.vals, self.counts)]
+
+    def reset(self):
+        self.vals = [0. for _ in range(self.num_classes)]
+        self.counts = [0. for _ in range(self.num_classes)]
+
+
+def iterative_mean_shift(num_classes, num_prototypes, prototypes):
+    curr_num = np.inf
+    labels = {i: i for i in range(num_prototypes)}
+    while curr_num > num_classes:
+        proto_clustering = MeanShift().fit(prototypes)
+        matching = proto_clustering.labels_
+        labels = {i: matching[labels[i]] for i in range(num_prototypes)}
+        curr_num = np.max(matching) + 1
+        prototypes = proto_clustering.cluster_centers_
+    return list(labels.values())

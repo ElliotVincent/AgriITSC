@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from src.utils.metrics import IoU
 from src.utils import utils, model_utils
-from src.dataset.pastis import PASTIS_Dataset
+from src.dataset.pastis_raw import PASTIS_Dataset
 
 N_CLASSES = 20
 IMG_SIZE = 128
