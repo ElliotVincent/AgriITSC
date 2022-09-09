@@ -1,0 +1,47 @@
+dataset:
+  name: pastis
+  train_fold: [1, 2, 3, 4, 5]
+  val_fold: [4]
+  test_fold: [5]
+  use_ndvi: False
+model:
+  name: agrisits
+  num_classes: 19
+  num_prototypes: 19
+  input_dim: 10
+  num_steps: 406
+  feature_size: 128
+  learn_weights: False
+  init_proto: True
+  n_heads: 16
+  mlp: [256, 128]
+  d_k: 4
+  dropout: 0.2
+  d_model: 256
+  supervised: True
+  dataset_name: pastis
+  # num_proto_per_class: 1
+training:
+  device: cuda
+  loss: recons
+  batch_size: 4
+  n_workers: 4
+  optimizer:
+    lr: 1.0e-5
+  scheduler:
+    factor: 0.1
+    patience: 2
+    threshold: 0.0001
+  n_epochs: 100
+  print_step: 500
+  valid_step: 5000
+  check_cluster_step: 250
+  trans_activ: True
+  offset_activ: True
+  scale_activ: True
+  ce_activ: False
+  curriculum: [0, 5000, 8000]
+  rdm_seed: 621
+  visualizer_port: 8889
+  pretrained:
+  resume:

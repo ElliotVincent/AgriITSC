@@ -4,7 +4,7 @@ dataset:
 model:
   name: kmeans
   num_classes: 5
-  num_prototypes: 8
+  num_prototypes: 128
   input_dim: 4
   num_steps: 244
   learn_weights: False

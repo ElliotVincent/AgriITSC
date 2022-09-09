@@ -1,5 +1,6 @@
 dataset:
   name: denethor
+  with_img_id: True
 model:
   name: means
   num_classes: 9

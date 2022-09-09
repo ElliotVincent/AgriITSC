@@ -7,7 +7,7 @@ dataset:
 model:
   name: kmeans
   num_classes: 19
-  num_prototypes: 128
+  num_prototypes: 32
   input_dim: 10
   num_steps: 406
   learn_weights: False
@@ -22,7 +22,7 @@ training:
   scheduler:
     factor: 0.1
     patience: 2
-    threshold: 0.0001
+    threshold: 0.001
   n_epochs: 20
   print_step: 250
   valid_step: 250

@@ -10,7 +10,7 @@ from src.dataset.denethor import DENETHORDataset
 from src.dataset.sa import SADataset
 from src.dataset.breizh import BREIZHDataset
 from src.dataset.ts2c import TS2CDataset
-from src.model.upssits import UPSSITS
+from src.model.upssits import AgriSits
 from src.model.mlp import MLP
 from src.model.means import Means
 from src.model.kmeans import KMeans
@@ -112,9 +112,11 @@ def get_train_dataset(config):
 def get_val_dataset(config):
     name = config.get("name", "denethor")
     if name == 'denethor':
-        val_dataset = DENETHORDataset('./datasets/DENETHOR/', 'val')
+        with_img_id = config.get("with_img_id", False)
+        val_dataset = DENETHORDataset('./datasets/DENETHOR/', 'val', with_img_id=with_img_id)
     elif name == 'sa':
-        val_dataset = SADataset('./datasets/SA/', 'val')
+        with_img_id = config.get("with_img_id", False)
+        val_dataset = SADataset('./datasets/SA/', 'val', with_img_id=with_img_id)
     elif name == 'ts2c':
         val_dataset = TS2CDataset('./datasets/TimeSen2Crop/', 'val')
     elif name == 'breizh':
@@ -149,10 +151,21 @@ def get_test_dataset(config):
     return test_dataset
 
 
+def get_dataset(config, split):
+    if split == 'train':
+        return get_train_dataset(config)
+    elif split == 'val':
+        return get_val_dataset(config)
+    elif split == 'test':
+        return get_test_dataset(config)
+    else:
+        raise NameError(split)
+
+
 def get_model(config):
-    name = config.pop("name", "upssits")
-    if name == 'upssits':
-        model = UPSSITS(**config)
+    name = config.pop("name", "agrisits")
+    if name == 'agrisits':
+        model = AgriSits(**config)
     elif name == 'mlp':
         model = MLP(**config)
     elif name == 'means':

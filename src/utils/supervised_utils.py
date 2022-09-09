@@ -60,6 +60,12 @@ class VisdomLinePlotter(object):
             store_history=True,
         ))
 
+    def image(self, var_name, split_name, title_name, x):
+        self.viz.image(x, env=self.env, win=var_name, opts=dict(
+            title=title_name,
+            xlabel='Epochs',
+            store_history=True,
+        ))
 
 def prepare_inputs(input_seq, mask, dates, label, device, fold=1, mode='none',
                    FIRST_VAL=FIRST_VAL, LAST_VAL=LAST_VAL):
