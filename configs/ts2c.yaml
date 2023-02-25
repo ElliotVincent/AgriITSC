@@ -9,7 +9,8 @@ model:
   feature_size: 128
   supervised: True
   amplitude: 0.5
-  init_proto: random
+  init_proto: sample
+  missing_dates: True
 training:
   device: cuda
   loss: recons
@@ -22,14 +23,13 @@ training:
     patience: 2
     threshold: 0.0001
   n_epochs: 10000
-  print_step: 500
-  valid_step: 5000
-  check_cluster_step: 500
+  print_step: 50
+  valid_step: 500
+  check_cluster_step: 50
   trans_activ: True
   offset_activ: True
-  scale_activ: False
   ce_activ: True
-  curriculum: [0, 0, 1000000000, 5000]
+  curriculum: [0, 1000000000, 1000000000]
   rdm_seed: 621
   visualizer_port: 8889
   pretrained:

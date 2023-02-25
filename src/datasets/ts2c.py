@@ -20,9 +20,12 @@ class TS2CDataset(tdata.Dataset):
         self.num_steps = 363
 
         with open(os.path.join(self.folder, 'params.json'), 'rb') as f:
-            self.MEAN = np.array(json.load(f)["MEAN"][self.split])
-            self.STD = np.array(json.load(f)["STD"][self.split])
-
+            params = json.load(f)
+        self.MEAN = params["MEAN"]
+        self.STD = params["STD"]
+        for k in self.MEAN.keys():
+            self.MEAN[k] = np.array(self.MEAN[k])
+            self.STD[k] = np.array(self.STD[k])
         fold_item = {}
         if self.split == 'all':
             len = []

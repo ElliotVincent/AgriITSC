@@ -1,13 +1,11 @@
 import json
 import numpy as np
 from pathlib import Path
+import random
+import torch
 
 from src.datasets.ts2c import TS2CDataset
 from src.models.agritsc import AgriSits
-
-
-def gaussian(x, mu, sig=1):
-    return np.exp(-np.power(x - mu, 2.) / (2 * np.power(sig, 2.))) / (sig * np.sqrt(2 * np.pi))
 
 
 def coerce_to_path_and_check_exist(path):
@@ -34,11 +32,12 @@ def get_dataset(config, split='all'):
 
 
 def get_model(config):
-    name = config.get("name", "agrisits")
+    name = config.pop("name", "agrisits")
     if name == 'agrisits':
         model = AgriSits(**config)
     else:
         raise NameError(name)
+    config["name"] = name
     return model
 
 
@@ -103,3 +102,24 @@ class TransfoScheduler:
                     self.val_loss = None
                     if self.curr_transfo + 1 == self.num_transfo:
                         self.is_complete = True
+
+
+def initialize_prototypes(config, loader, device):
+    init_proto = config['model']['init_proto']
+    if init_proto == 'sample':
+        for i, batch in enumerate(loader):
+            input_seq, mask, y = batch
+            input_seq = input_seq.to(device)
+            mask = mask.to(device)
+            input_seq = input_seq.view(-1, config['model']['num_steps'], config['model']['input_dim']).to(torch.float32)
+            mask = mask.view(-1, config['model']['num_steps']).int()
+            indice = random.sample(range(input_seq.size(0)), config['model']['num_prototypes'])
+            indice = torch.tensor(indice)
+            sample = input_seq[indice]
+            sample_mask = mask[indice]
+            break
+        return (sample, sample_mask)
+    elif init_proto == 'random':
+        return None
+    else:
+        raise NameError(init_proto)

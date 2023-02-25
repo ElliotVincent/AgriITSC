@@ -5,7 +5,6 @@ import numpy as np
 from torch.optim import Adam
 from src.utils.tps import TPSGrid
 from src.models.fcn_ts import FCNBaseline
-from src.utils.utils import gaussian
 
 NOISE_SCALE = 0.0001
 
@@ -196,3 +195,7 @@ class AgriSits(nn.Module):
                                    mask[..., None])
         input = input / mask_nonzero
         return input, mask
+
+
+def gaussian(x, mu, sig=1):
+    return np.exp(-np.power(x - mu, 2.) / (2 * np.power(sig, 2.))) / (sig * np.sqrt(2 * np.pi))

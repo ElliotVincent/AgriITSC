@@ -28,7 +28,7 @@ def iterate(input_seq, label, mask, config, model, optimizer, mode='train', n_it
     proto_count = torch.stack([(indices == k).float().sum() for k in range(config['model']['num_prototypes'])])
     training_loss = ((mask * ((output_seq - input_seq) ** 2).mean(2)).sum(1) / torch.where(mask.sum(1) == 0, torch.ones_like(mask.sum(1)), mask.sum(1))).mean()
     training_loss_backward = training_loss + tv_h
-    if config['model'].get('supervised', False) and config['training']['ce_activ'] and n_iter >= config['training']['curriculum'][3] and mode == 'train':
+    if config['model'].get('supervised', False) and config['training']['ce_activ'] and n_iter >= config['training']['curriculum'][2] and mode == 'train':
         training_loss = training_loss + 0.01 * torch.nn.functional.cross_entropy(logits, label, reduction='none').mean()
     if mode == 'train':
         training_loss_backward.backward()
@@ -117,11 +117,14 @@ def train(config, res_dir):
         pin_memory=True,
     )
 
+    proto_init = initialize_prototypes(config, train_loader, device)
+    config["model"]["sample"] = proto_init
     model = get_model(config["model"])
-    model = torch.nn.DataParallel(model.to(device), device_ids=[0, 1])
+    model = torch.nn.DataParallel(model.to(device), device_ids=[0, 1, 2, 3])
     config["N_params"] = get_ntrainparams(model)
     print(f"Model has {config['N_params']} parameters.")
     with open(os.path.join(res_dir, "conf.json"), "w") as file:
+        config["model"]["sample"] = None
         file.write(json.dumps(config, indent=4))
 
     optimizer = torch.optim.Adam(model.parameters(), **config['training']['optimizer'])
@@ -153,7 +156,7 @@ def train(config, res_dir):
             label = y.view(-1).long()
             mask = mask.view(-1, config['model']['num_steps']).int()
             loss, acc, acc_per_class, class_count, proto_count, label, pred_indices, output_seq, tv_h = iterate(input_seq, label, mask,
-                                                                                              config, model, optimizer, n_iter=n_iter)
+                                                                                                                config, model, optimizer, n_iter=n_iter)
             n_iter += 1
             n_iter_since_new += 1
             if curriculum_scheduler.is_complete:
@@ -173,14 +176,10 @@ def train(config, res_dir):
                 proto_count_meter.reset()
 
             if n_iter % config['training']['print_step'] == 0:
-                curr_acc = acc_meter.value()[0]
-                curr_acc_per_class = acc_per_class_meter.value()
-                matching = None
-                if config['model']['name'] in ['agrisits', 'kmeans', 'kmeansDTW']:
-                    matching = conf_matrix.purity_assignment()
-                    curr_acc = conf_matrix.get_acc()
-                    curr_acc_per_class = conf_matrix.get_acc_per_class()
-                    conf_matrix.reset()
+                matching = conf_matrix.purity_assignment()
+                curr_acc = conf_matrix.get_acc()
+                curr_acc_per_class = conf_matrix.get_acc_per_class()
+                conf_matrix.reset()
                 print('   Iter {}: Loss {:.3f}, Acc {:.2f}%, Mean Acc {:.2f}%'.format(n_iter,
                                                                                       loss_meter.value()[0],
                                                                                       curr_acc,
@@ -199,13 +198,14 @@ def train(config, res_dir):
                 acc_per_class_meter.reset()
                 acc_meter.reset()
                 tvh_meter.reset()
+                proto_count_meter.reset()
 
             if n_iter % config['training']['valid_step'] == 0:
                 if config['model']['supervised']:
                     matching = np.array(list(range(config['model']['num_classes'])))
                 print('Validation...')
                 model.eval()
-                val_metrics = validate(val_loader, model, optimizer, config, mode='val', matching=matching, split='val', n_iter=n_iter)
+                val_metrics = validate(val_loader, model, optimizer, config, mode='val', matching=matching, n_iter=n_iter)
 
                 if n_iter_since_new >= 100000:
                     if not curriculum_scheduler.is_complete:
