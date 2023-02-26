@@ -7,6 +7,7 @@ import torch
 
 from src.datasets.ts2c import TS2CDataset
 from src.models.agritsc import AgriSits
+from src.utils.paths import RESULTS_PATH
 
 
 def coerce_to_path_and_check_exist(path):
@@ -122,29 +123,37 @@ def initialize_prototypes(config, loader, device):
     elif init_proto == 'random':
         return None
     elif init_proto == 'means':
-        means = torch.zeros((config['model']['num_classes'],
-                             config['model']['num_steps'],
-                             config['model']['input_dim']), device=device)
-
-        mask_counts = torch.zeros((config['model']['num_classes'],
-                             config['model']['num_steps']), device=device)
-        for i, batch in enumerate(loader):
-            input_seq, mask, y = batch
-            input_seq = input_seq.to(device).float()
-            mask = mask.to(device).float()
-            y = y.to(device).long()
-            means.index_put_((y,), input_seq, accumulate=True)
-            mask_counts.index_put_((y,), mask, accumulate=True)
-        means = means / torch.where(mask_counts == 0, 1., mask_counts)[..., None]
-        mask = mask_counts > 0
-        return means, mask
+        means_path = Path(os.path.join(RESULTS_PATH, f'{config["dataset"]["name"]}', 'init/means.pt'))
+        masks_path = Path(os.path.join(RESULTS_PATH, f'{config["dataset"]["name"]}', 'init/masks.pt'))
+        if not means_path.exists():
+            means = torch.zeros((config['model']['num_classes'], config['model']['num_steps'],
+                                 config['model']['input_dim']), device=device)
+            mask_counts = torch.zeros((config['model']['num_classes'], config['model']['num_steps']), device=device)
+            for i, batch in enumerate(loader):
+                input_seq, mask, y = batch
+                input_seq = input_seq.to(device).float()
+                mask = mask.to(device).float()
+                y = y.to(device).long()
+                means.index_put_((y,), input_seq, accumulate=True)
+                mask_counts.index_put_((y,), mask, accumulate=True)
+            means = means / torch.where(mask_counts == 0, 1., mask_counts)[..., None]
+            masks = mask_counts > 0
+            torch.save(means, means_path)
+            torch.save(masks, masks_path)
+            return means, masks
+        else:
+            means = torch.load(means_path)
+            masks = torch.load(masks_path)
+            return means, masks
     elif init_proto == 'kmeans':
-        init_seed = config['model'].get('init_seed', 1)
-        centroids = torch.load(
-                os.path.join(
-                    f'/home/vincente/AgriITSC/results/{config["dataset"]["name"]}', f'kmeans32_{init_seed}.pt'
-                )
-        )
-        return centroids
+        init_seed = config['model'].pop('init_seed', 1)
+        path = Path(os.path.join(RESULTS_PATH, f'{config["dataset"]["name"]}', f'init/kmeans32_{init_seed}.pt'))
+        if not path.exists():
+            print("No kmeans centroids saved: initialize with random sample instead")
+            config['model']['init_proto'] = 'sample'
+            return initialize_prototypes(config, loader, device)
+        else:
+            kmeans_centroids = torch.load(path)
+            return kmeans_centroids
     else:
         raise NameError(init_proto)

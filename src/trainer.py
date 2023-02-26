@@ -1,10 +1,11 @@
 import argparse
+
 from sklearn.metrics import classification_report, confusion_matrix
 import torchnet as tnt
 import yaml
 
 from src.utils.metrics import ConfusionMatrix, CustomMeter
-from src.utils.paths import CONFIGS_PATH, RESULTS_PATH
+from src.utils.paths import CONFIGS_PATH
 from src.utils.utils import *
 from src.utils.constants import *
 
@@ -70,16 +71,17 @@ def validate(val_loader, model, optimizer, config, mode='test', matching=None, n
                    }
     print('   Val Loss: {:.3f}, Val Acc: {:.2f}, Val mAcc: {:.2f}'.format(val_metrics['loss'],
                                                                           val_metrics['acc'], val_metrics['mean_acc']))
-    if config['training']['loss'] in ['logreg', 'mixed', 'ce']:
-        val_metrics['lambda'] = 0
-    if config['model'].get('learn_weights', False):
-        val_metrics['weights'] = [0 for _ in range(config['model']['num_steps'] * config['model']['input_dim'])]
     return val_metrics
 
 
-def get_matching(config, model, device):
+def get_matching(config, res_dir, model, device):
     print('Getting the prototype assignment...')
-    if config['model']['supervised']:
+    path = Path(os.path.join(res_dir, 'matching.json'))
+    if path.exists():
+        matching = np.array(json.load(open(path, 'r'))['matching'])
+        print('... done!')
+        return matching
+    elif config['model']['supervised']:
         print('... done!')
         return np.array(list(range(config['model']['num_classes'])))
     else:
@@ -87,6 +89,7 @@ def get_matching(config, model, device):
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=config['training'].get("batch_size"),
+            num_workers=config['training']['n_workers'],
             shuffle=False,
             drop_last=False,
             pin_memory=True,
@@ -134,6 +137,7 @@ def train(config, res_dir):
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=config['training'].get("batch_size"),
+        num_workers=config['training']['n_workers'],
         shuffle=True,
         drop_last=True,
         pin_memory=True,
@@ -143,6 +147,7 @@ def train(config, res_dir):
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=config['training'].get("batch_size"),
+        num_workers=config['training']['n_workers'],
         shuffle=False,
         drop_last=False,
         pin_memory=True,
@@ -152,13 +157,6 @@ def train(config, res_dir):
     config["model"]["sample"] = proto_init
     model = get_model(config["model"])
     model = torch.nn.DataParallel(model.to(device), device_ids=[0, 1, 2, 3])
-    model.load_state_dict(
-            torch.load(
-                os.path.join(
-                    '/home/vincente/AgriITSC/results/ts2c/ours_unsupervised/run_1', f"model_loss.pth.tar"
-                )
-            )["state_dict"]
-        )
     config["N_params"] = get_ntrainparams(model)
     print(f"Model has {config['N_params']} parameters.")
     with open(os.path.join(res_dir, "conf.json"), "w") as file:
@@ -176,14 +174,12 @@ def train(config, res_dir):
     n_iter = 0
     n_iter_since_new = 0
     n_iter_since_complete = 0
-    best_acc = 0
-    best_loss = np.inf
+    best_val_loss = np.inf
     loss_meter = tnt.meter.AverageValueMeter()
     conf_matrix = ConfusionMatrix(config['model']['num_classes'], config['model']['num_prototypes'])
     proto_count_meter = CustomMeter(num_classes=config['model']['num_prototypes'])
     tvh_meter = tnt.meter.AverageValueMeter()
     curriculum_scheduler = TransfoScheduler(config)
-    model_to_consider = 'acc' if config['model']['supervised'] else 'loss'
 
     for epoch in range(1, config['training']['n_epochs'] + 1):
         print('Epoch {}/{}:'.format(epoch, config['training']['n_epochs']))
@@ -252,7 +248,7 @@ def train(config, res_dir):
                             model.load_state_dict(
                                 torch.load(
                                     os.path.join(
-                                        res_dir, f"model_{model_to_consider}.pth.tar"
+                                        res_dir, f"model.pth.tar"
                                     )
                                 )["state_dict"]
                             )
@@ -275,8 +271,8 @@ def train(config, res_dir):
                 print('... done!')
                 val_logger.update(val_metrics, n_iter)
                 model.train()
-                if val_metrics['mean_acc'] > best_acc:
-                    best_acc = val_metrics['mean_acc']
+                if val_loss_to_consider < best_val_loss:
+                    best_val_loss = val_loss_to_consider
                     torch.save(
                         {
                             "iter": n_iter,
@@ -284,34 +280,10 @@ def train(config, res_dir):
                             "optimizer": optimizer.state_dict(),
                         },
                         os.path.join(
-                            res_dir, "model_acc.pth.tar"
+                            res_dir, "model.pth.tar"
                         ))
-                    with open(os.path.join(res_dir, "val_metrics_acc.json"), "w") as file:
+                    with open(os.path.join(res_dir, "val_metrics.json"), "w") as file:
                         file.write(json.dumps(val_metrics, indent=4))
-                if val_metrics['loss'] < best_loss:
-                    best_loss = val_metrics['loss']
-                    torch.save(
-                        {
-                            "iter": n_iter,
-                            "state_dict": model.state_dict(),
-                            "optimizer": optimizer.state_dict(),
-                        },
-                        os.path.join(
-                            res_dir, "model_loss.pth.tar"
-                        ))
-                    with open(os.path.join(res_dir, "val_metrics_loss.json"), "w") as file:
-                        file.write(json.dumps(val_metrics, indent=4))
-                torch.save(
-                    {
-                        "iter": n_iter,
-                        "state_dict": model.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                    },
-                    os.path.join(
-                        res_dir, "model_last.pth.tar"
-                    ))
-                with open(os.path.join(res_dir, "val_metrics_last.json"), "w") as file:
-                    file.write(json.dumps(val_metrics, indent=4))
 
             if optimizer.param_groups[0]['lr'] < MIN_LR:
                 break
@@ -325,19 +297,14 @@ def train(config, res_dir):
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=config['training']['batch_size'],
+        num_workers=config['training']['n_workers'],
         shuffle=False,
         drop_last=False,
         pin_memory=True,
     )
 
-    model.load_state_dict(
-            torch.load(
-                os.path.join(
-                    res_dir, f"model_{model_to_consider}.pth.tar"
-                )
-            )["state_dict"]
-        )
-    matching = get_matching(config, model, device)
+    model.load_state_dict(torch.load(os.path.join(res_dir, f"model.pth.tar"))["state_dict"])
+    matching = get_matching(config, res_dir, model, device)
     model.eval()
     with torch.no_grad():
         loss_tot = 0

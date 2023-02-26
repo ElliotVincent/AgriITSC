@@ -13,7 +13,6 @@ model:
   missing_dates: True
 training:
   device: cuda
-  loss: recons
   batch_size: 4
   n_workers: 4
   optimizer:
