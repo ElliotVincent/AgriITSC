@@ -1,5 +1,5 @@
 import argparse
-import os
+from sklearn.metrics import classification_report, confusion_matrix
 import torchnet as tnt
 import yaml
 
@@ -7,7 +7,6 @@ from src.utils.metrics import ConfusionMatrix, CustomMeter
 from src.utils.paths import CONFIGS_PATH, RESULTS_PATH
 from src.utils.utils import *
 from src.utils.constants import *
-
 
 
 def iterate(input_seq, label, mask, config, model, optimizer, mode='train', n_iter=0):
@@ -78,6 +77,42 @@ def validate(val_loader, model, optimizer, config, mode='test', matching=None, n
     return val_metrics
 
 
+def get_matching(config, model, device):
+    print('Getting the prototype assignment...')
+    if config['model']['supervised']:
+        print('... done!')
+        return np.array(list(range(config['model']['num_classes'])))
+    else:
+        train_dataset = get_dataset(config["dataset"], 'train')
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=config['training'].get("batch_size"),
+            shuffle=False,
+            drop_last=False,
+            pin_memory=True,
+        )
+        model.eval()
+        with torch.no_grad():
+            conf_mat = np.zeros((config['model']['num_classes'], config['model']['num_prototypes'])).flatten()
+            for i, batch in enumerate(train_loader):
+                input_seq, mask, y = batch
+                input_seq = input_seq.view(-1, config['model']['num_steps'], config['model']['input_dim']).to(
+                    torch.float32).to(device)
+                label = y.view(-1).long().to(device)
+                mask = mask.view(-1, config['model']['num_steps']).int().to(device)
+                loss, _, _, label, pred_indices, _, _ = iterate(input_seq, label, mask, config, model, None, n_iter=0,
+                                                                mode='test')
+                np.add.at(conf_mat, config['model'][
+                    'num_prototypes'] * label.detach().cpu().numpy() + pred_indices.detach().cpu().numpy(), 1)
+        conf_mat = np.reshape(conf_mat, (config['model']['num_classes'], config['model']['num_prototypes']))
+        matching = np.argmax(conf_mat, axis=0)
+        with open(os.path.join(res_dir, f"matching.json"), 'w') as file:
+            file.write(json.dumps({'matching': matching.tolist(),
+                                   'conf_mat': conf_mat.tolist()}, indent=4))
+        print('... done!')
+        return matching
+
+
 def train(config, res_dir):
     coerce_to_path_and_create_dir(res_dir)
 
@@ -120,7 +155,7 @@ def train(config, res_dir):
     model.load_state_dict(
             torch.load(
                 os.path.join(
-                    f"/home/vincente/AgriITSC/results/ts2c/supervised_all_final_no_scaling", "model_acc.pth.tar"
+                    '/home/vincente/AgriITSC/results/ts2c/ours_unsupervised/run_1', f"model_loss.pth.tar"
                 )
             )["state_dict"]
         )
@@ -148,6 +183,7 @@ def train(config, res_dir):
     proto_count_meter = CustomMeter(num_classes=config['model']['num_prototypes'])
     tvh_meter = tnt.meter.AverageValueMeter()
     curriculum_scheduler = TransfoScheduler(config)
+    model_to_consider = 'acc' if config['model']['supervised'] else 'loss'
 
     for epoch in range(1, config['training']['n_epochs'] + 1):
         print('Epoch {}/{}:'.format(epoch, config['training']['n_epochs']))
@@ -202,11 +238,12 @@ def train(config, res_dir):
                 print('Validation...')
                 model.eval()
                 val_metrics = validate(val_loader, model, optimizer, config, mode='val', matching=matching, n_iter=n_iter)
-
+                val_loss_to_consider = -val_metrics['mean_acc'] if config['model']['supervised'] else val_metrics[
+                    'loss']
                 if n_iter_since_new >= N_WARM_UP_ITER:
                     if not curriculum_scheduler.is_complete:
                         prev_transf = curriculum_scheduler.curr_transfo
-                        curriculum_scheduler.update(-val_metrics['mean_acc'], n_iter)
+                        curriculum_scheduler.update(val_loss_to_consider, n_iter)
                         next_transf = curriculum_scheduler.curr_transfo
                         if prev_transf != next_transf:
                             n_iter_since_new = 0
@@ -215,7 +252,7 @@ def train(config, res_dir):
                             model.load_state_dict(
                                 torch.load(
                                     os.path.join(
-                                        res_dir, "model_acc.pth.tar"
+                                        res_dir, f"model_{model_to_consider}.pth.tar"
                                     )
                                 )["state_dict"]
                             )
@@ -231,7 +268,7 @@ def train(config, res_dir):
                         config = curriculum_scheduler.config
                 pre_lr = optimizer.param_groups[0]['lr']
                 if curriculum_scheduler.is_complete and n_iter_since_complete > N_WARM_UP_ITER:
-                    scheduler.step(-val_metrics['mean_acc'])
+                    scheduler.step(val_loss_to_consider)
                 post_lr = optimizer.param_groups[0]['lr']
                 if pre_lr > post_lr:
                     scheduler._reset()
@@ -251,9 +288,6 @@ def train(config, res_dir):
                         ))
                     with open(os.path.join(res_dir, "val_metrics_acc.json"), "w") as file:
                         file.write(json.dumps(val_metrics, indent=4))
-                    if matching is not None:
-                        with open(os.path.join(res_dir, "matching_acc.json"), "w") as file:
-                            file.write(json.dumps({'matching': matching.astype(int).tolist()}, indent=4))
                 if val_metrics['loss'] < best_loss:
                     best_loss = val_metrics['loss']
                     torch.save(
@@ -267,9 +301,6 @@ def train(config, res_dir):
                         ))
                     with open(os.path.join(res_dir, "val_metrics_loss.json"), "w") as file:
                         file.write(json.dumps(val_metrics, indent=4))
-                    if matching is not None:
-                        with open(os.path.join(res_dir, "matching_loss.json"), "w") as file:
-                            file.write(json.dumps({'matching': matching.astype(int).tolist()}, indent=4))
                 torch.save(
                     {
                         "iter": n_iter,
@@ -281,9 +312,6 @@ def train(config, res_dir):
                     ))
                 with open(os.path.join(res_dir, "val_metrics_last.json"), "w") as file:
                     file.write(json.dumps(val_metrics, indent=4))
-                    if matching is not None:
-                        with open(os.path.join(res_dir, "matching_last.json"), "w") as file:
-                            file.write(json.dumps({'matching': matching.astype(int).tolist()}, indent=4))
 
             if optimizer.param_groups[0]['lr'] < MIN_LR:
                 break
@@ -292,6 +320,49 @@ def train(config, res_dir):
             break
 
     print('Training over!')
+    print('Evaluate on test...')
+    test_dataset = get_dataset(config["dataset"], 'test')
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=config['training']['batch_size'],
+        shuffle=False,
+        drop_last=False,
+        pin_memory=True,
+    )
+
+    model.load_state_dict(
+            torch.load(
+                os.path.join(
+                    res_dir, f"model_{model_to_consider}.pth.tar"
+                )
+            )["state_dict"]
+        )
+    matching = get_matching(config, model, device)
+    model.eval()
+    with torch.no_grad():
+        loss_tot = 0
+        predict_list = np.array([])
+        labs_list = np.array([])
+        for i, batch in enumerate(test_loader):
+            input_seq, mask, y = batch
+            input_seq = input_seq.view(-1, config['model']['num_steps'], config['model']['input_dim']).to(torch.float32).to(device)
+            label = y.view(-1).long().to(device)
+            mask = mask.view(-1, config['model']['num_steps']).int().to(device)
+            loss, _, _, label, pred_indices, _, _ = iterate(input_seq, label, mask, config, model, optimizer,
+                                                            n_iter=n_iter, mode='test')
+            loss_tot += loss.item()
+            n_iter += 1
+            labs_list = np.concatenate((labs_list, label.detach().cpu().numpy()), axis=0)
+            predict_list = np.concatenate((predict_list, matching[pred_indices.detach().cpu().numpy()]), axis=0)
+    report = classification_report(labs_list, predict_list, digits=4, zero_division=0)
+    conf_mat = confusion_matrix(labs_list, predict_list)
+    with open(os.path.join(res_dir, f'test_recons_loss_acc.txt'), 'w') as f:
+        f.write(f'recons_loss: {loss_tot / n_iter}')
+    with open(os.path.join(res_dir, f'test_metrics_raw_acc.txt'), 'w') as f:
+        f.write(report)
+    with open(os.path.join(res_dir, f'test_conf_mat_acc.json'), 'w') as f:
+        f.write(json.dumps({'conf_mat': conf_mat.tolist()}))
+    print('... done!')
 
 
 if __name__ == "__main__":
@@ -300,8 +371,8 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--config", nargs="?", type=str, required=True, help="Config file name")
     args = parser.parse_args()
 
-    print(args.tag)
-    print(args.config)
+    print(f'Experiment tag is {args.tag}.')
+    print(f'Configuration file is {args.config}.')
 
     assert args.tag is not None and args.config is not None
     config = coerce_to_path_and_check_exist(CONFIGS_PATH / args.config)

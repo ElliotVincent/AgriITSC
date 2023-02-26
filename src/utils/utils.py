@@ -1,5 +1,6 @@
 import json
 import numpy as np
+import os
 from pathlib import Path
 import random
 import torch
@@ -117,9 +118,33 @@ def initialize_prototypes(config, loader, device):
             indice = torch.tensor(indice)
             sample = input_seq[indice]
             sample_mask = mask[indice]
-            break
-        return (sample, sample_mask)
+            return sample, sample_mask
     elif init_proto == 'random':
         return None
+    elif init_proto == 'means':
+        means = torch.zeros((config['model']['num_classes'],
+                             config['model']['num_steps'],
+                             config['model']['input_dim']), device=device)
+
+        mask_counts = torch.zeros((config['model']['num_classes'],
+                             config['model']['num_steps']), device=device)
+        for i, batch in enumerate(loader):
+            input_seq, mask, y = batch
+            input_seq = input_seq.to(device).float()
+            mask = mask.to(device).float()
+            y = y.to(device).long()
+            means.index_put_((y,), input_seq, accumulate=True)
+            mask_counts.index_put_((y,), mask, accumulate=True)
+        means = means / torch.where(mask_counts == 0, 1., mask_counts)[..., None]
+        mask = mask_counts > 0
+        return means, mask
+    elif init_proto == 'kmeans':
+        init_seed = config['model'].get('init_seed', 1)
+        centroids = torch.load(
+                os.path.join(
+                    f'/home/vincente/AgriITSC/results/{config["dataset"]["name"]}', f'kmeans32_{init_seed}.pt'
+                )
+        )
+        return centroids
     else:
         raise NameError(init_proto)

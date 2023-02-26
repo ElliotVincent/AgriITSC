@@ -114,7 +114,7 @@ class AgriSits(nn.Module):
 
 
     def initialize_prototypes(self):
-        if self.init_proto == 'sample':
+        if self.init_proto in ['sample', 'means']:
             sample, sample_mask = self.sample
             if self.missing_dates:
                 sample, sample_mask = self.fill_missing_dates(sample, sample_mask)
@@ -122,9 +122,8 @@ class AgriSits(nn.Module):
         elif self.init_proto == 'random':
             proto_init = torch.randn(self.num_prototypes, self.num_steps, self.input_dim)
             return proto_init
-        elif self.init_proto == 'load':
-            proto_init = torch.load(self.model_path)["state_dict"]["module.prototypes"]
-            return proto_init
+        elif self.init_proto == 'kmeans':
+            return self.sample
         else:
             raise NameError(self.init_proto)
 

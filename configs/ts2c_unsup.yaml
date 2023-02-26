@@ -1,0 +1,36 @@
+dataset:
+  name: ts2c
+model:
+  name: agrisits
+  input_dim: 9
+  num_steps: 363
+  num_classes: 16
+  num_prototypes: 32
+  feature_size: 128
+  supervised: False
+  amplitude: 0.5
+  init_proto: kmeans
+  missing_dates: True
+training:
+  device: cuda
+  loss: recons
+  batch_size: 4
+  n_workers: 4
+  optimizer:
+    lr: 1.0e-6
+  scheduler:
+    factor: 0.1
+    patience: 2
+    threshold: 0.0001
+  n_epochs: 10000
+  print_step: 1
+  valid_step: 1
+  check_cluster_step: 1
+  trans_activ: True
+  offset_activ: True
+  ce_activ: False
+  curriculum: [0, 1000000000]
+  rdm_seed: 621
+  visualizer_port: 8889
+  pretrained:
+  resume:

@@ -39,7 +39,7 @@ class TS2CDataset(tdata.Dataset):
                 len = int(json.load(f)['len'])
             self.len = len
         self.fold_item = fold_item
-        print('Dataset size: {}'.format(self.len * self.file_size))
+        print('{} dataset size: {}'.format(self.split, self.len * self.file_size))
 
     def __len__(self):
         return self.len
