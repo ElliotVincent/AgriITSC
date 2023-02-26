@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 
 from torch.optim import Adam
-from src.utils.tps import TPSGrid
+from src.models.tps import TPSGrid
 from src.models.fcn_ts import FCNBaseline
 
 NOISE_SCALE = 0.0001
@@ -64,7 +64,7 @@ class AgriSits(nn.Module):
         for module in self.trans_predictor:
             torch.nn.init.zeros_(module.weight)
             torch.nn.init.zeros_(module.bias)
-        a, b = torch.meshgrid([torch.linspace(-1, 1, 2), torch.linspace(-1, 1, self.num_control_points + 2)])
+        a, b = torch.meshgrid([torch.linspace(-1, 1, 2), torch.linspace(-1, 1, self.num_control_points + 2)], indexing='ij')
         target_control_points = torch.stack([a.flatten(), b.flatten()], dim=1)
         self.register_buffer('target_control_points', target_control_points)
         self.tps_grid = TPSGrid([self.num_steps, 1], self.target_control_points)

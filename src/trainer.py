@@ -1,13 +1,13 @@
 import argparse
-import json
 import os
-import torch
 import torchnet as tnt
 import yaml
 
 from src.utils.metrics import ConfusionMatrix, CustomMeter
 from src.utils.paths import CONFIGS_PATH, RESULTS_PATH
 from src.utils.utils import *
+from src.utils.constants import *
+
 
 
 def iterate(input_seq, label, mask, config, model, optimizer, mode='train', n_iter=0):
@@ -27,9 +27,9 @@ def iterate(input_seq, label, mask, config, model, optimizer, mode='train', n_it
     logits = - loss
     proto_count = torch.stack([(indices == k).float().sum() for k in range(config['model']['num_prototypes'])])
     training_loss = ((mask * ((output_seq - input_seq) ** 2).mean(2)).sum(1) / torch.where(mask.sum(1) == 0, torch.ones_like(mask.sum(1)), mask.sum(1))).mean()
-    training_loss_backward = training_loss + tv_h
+    training_loss_backward = training_loss + LAMBDA * tv_h
     if config['model'].get('supervised', False) and config['training']['ce_activ'] and n_iter >= config['training']['curriculum'][2] and mode == 'train':
-        training_loss = training_loss + 0.01 * torch.nn.functional.cross_entropy(logits, label, reduction='none').mean()
+        training_loss = training_loss + MU * torch.nn.functional.cross_entropy(logits, label, reduction='none').mean()
     if mode == 'train':
         training_loss_backward.backward()
         optimizer.step()
@@ -37,13 +37,9 @@ def iterate(input_seq, label, mask, config, model, optimizer, mode='train', n_it
     if mode != 'train':
         recons_loss = (-recons_loss / config['model']['input_dim'] / torch.where(mask.sum(1) == 0, torch.ones_like(mask.sum(1)), mask.sum(1))).mean()
         training_loss = recons_loss
-    acc = (label == pred_indices).float().mean() * 100
     class_count = [(label == k).float().sum() for k in range(config['model']['num_classes'])]
-    dividers = [class_count[k] if class_count[k] > 0 else 1. for k in range(config['model']['num_classes'])]
     class_count = [1. if class_count[k] > 0 else 0. for k in range(config['model']['num_classes'])]
-    acc_per_class = torch.stack([((label == k) * (pred_indices == k)).float().sum() / dividers[k] * 100
-                                 for k in range(config['model']['num_classes'])])
-    return training_loss, acc, acc_per_class, class_count, proto_count, label, pred_indices, output_seq, tv_h
+    return training_loss, class_count, proto_count, label, pred_indices, output_seq, tv_h
 
 
 def validate(val_loader, model, optimizer, config, mode='test', matching=None, n_iter=0):
@@ -58,7 +54,7 @@ def validate(val_loader, model, optimizer, config, mode='test', matching=None, n
         mask = mask.view(-1, config['model']['num_steps']).int()
         input_seq = input_seq.to(torch.float32)
         with torch.no_grad():
-            loss, acc, acc_per_class, class_count, proto_count, label, pred_indices, _, tv_h = iterate(input_seq, label, mask,
+            loss, class_count, proto_count, label, pred_indices, _, tv_h = iterate(input_seq, label, mask,
                                                             config, model, optimizer, mode=mode, n_iter=n_iter)
         loss_meter.add(loss.item())
         tvh_meter.add(tv_h.item())
@@ -121,6 +117,13 @@ def train(config, res_dir):
     config["model"]["sample"] = proto_init
     model = get_model(config["model"])
     model = torch.nn.DataParallel(model.to(device), device_ids=[0, 1, 2, 3])
+    model.load_state_dict(
+            torch.load(
+                os.path.join(
+                    f"/home/vincente/AgriITSC/results/ts2c/supervised_all_final_no_scaling", "model_acc.pth.tar"
+                )
+            )["state_dict"]
+        )
     config["N_params"] = get_ntrainparams(model)
     print(f"Model has {config['N_params']} parameters.")
     with open(os.path.join(res_dir, "conf.json"), "w") as file:
@@ -144,8 +147,6 @@ def train(config, res_dir):
     conf_matrix = ConfusionMatrix(config['model']['num_classes'], config['model']['num_prototypes'])
     proto_count_meter = CustomMeter(num_classes=config['model']['num_prototypes'])
     tvh_meter = tnt.meter.AverageValueMeter()
-    acc_per_class_meter = CustomMeter(num_classes=config['model']['num_classes'])
-    acc_meter = tnt.meter.AverageValueMeter()
     curriculum_scheduler = TransfoScheduler(config)
 
     for epoch in range(1, config['training']['n_epochs'] + 1):
@@ -155,16 +156,13 @@ def train(config, res_dir):
             input_seq = input_seq.view(-1, config['model']['num_steps'], config['model']['input_dim']).to(torch.float32)
             label = y.view(-1).long()
             mask = mask.view(-1, config['model']['num_steps']).int()
-            loss, acc, acc_per_class, class_count, proto_count, label, pred_indices, output_seq, tv_h = iterate(input_seq, label, mask,
-                                                                                                                config, model, optimizer, n_iter=n_iter)
+            loss, class_count, proto_count, label, pred_indices, output_seq, tv_h = iterate(input_seq, label, mask, config, model, optimizer, n_iter=n_iter)
             n_iter += 1
             n_iter_since_new += 1
             if curriculum_scheduler.is_complete:
                 n_iter_since_complete += 1
 
             loss_meter.add(loss.item())
-            acc_per_class_meter.add(acc_per_class, class_count)
-            acc_meter.add(acc.item())
             tvh_meter.add(tv_h.item())
             conf_matrix.add(pred_indices, label)
             proto_count_meter.add(proto_count, [0 for _ in range(config['model']['num_prototypes'])])
@@ -195,8 +193,6 @@ def train(config, res_dir):
                                  'proportions': curr_prop}
                 train_logger.update(train_metrics, n_iter)
                 loss_meter.reset()
-                acc_per_class_meter.reset()
-                acc_meter.reset()
                 tvh_meter.reset()
                 proto_count_meter.reset()
 
@@ -207,7 +203,7 @@ def train(config, res_dir):
                 model.eval()
                 val_metrics = validate(val_loader, model, optimizer, config, mode='val', matching=matching, n_iter=n_iter)
 
-                if n_iter_since_new >= 100000:
+                if n_iter_since_new >= N_WARM_UP_ITER:
                     if not curriculum_scheduler.is_complete:
                         prev_transf = curriculum_scheduler.curr_transfo
                         curriculum_scheduler.update(-val_metrics['mean_acc'], n_iter)
@@ -234,7 +230,7 @@ def train(config, res_dir):
                                 ))
                         config = curriculum_scheduler.config
                 pre_lr = optimizer.param_groups[0]['lr']
-                if curriculum_scheduler.is_complete and n_iter_since_complete > 100000:
+                if curriculum_scheduler.is_complete and n_iter_since_complete > N_WARM_UP_ITER:
                     scheduler.step(-val_metrics['mean_acc'])
                 post_lr = optimizer.param_groups[0]['lr']
                 if pre_lr > post_lr:
@@ -289,10 +285,10 @@ def train(config, res_dir):
                         with open(os.path.join(res_dir, "matching_last.json"), "w") as file:
                             file.write(json.dumps({'matching': matching.astype(int).tolist()}, indent=4))
 
-            if optimizer.param_groups[0]['lr'] < 0.00001:
+            if optimizer.param_groups[0]['lr'] < MIN_LR:
                 break
 
-        if optimizer.param_groups[0]['lr'] < 0.00001:
+        if optimizer.param_groups[0]['lr'] < MIN_LR:
             break
 
     print('Training over!')

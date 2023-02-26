@@ -23,13 +23,13 @@ training:
     patience: 2
     threshold: 0.0001
   n_epochs: 10000
-  print_step: 50
-  valid_step: 500
-  check_cluster_step: 50
+  print_step: 1
+  valid_step: 2
+  check_cluster_step: 1
   trans_activ: True
   offset_activ: True
   ce_activ: True
-  curriculum: [0, 1000000000, 1000000000]
+  curriculum: [0, 0, 0]
   rdm_seed: 621
   visualizer_port: 8889
   pretrained:

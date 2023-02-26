@@ -24,7 +24,7 @@ class TPSGrid(nn.Module):
 
         # create target cordinate matrix
         HW = img_height * img_width
-        y, x = torch.meshgrid(torch.linspace(-1, 1, img_height), torch.linspace(-1, 1, img_width))
+        y, x = torch.meshgrid(torch.linspace(-1, 1, img_height), torch.linspace(-1, 1, img_width), indexing='ij')
         target_coordinate = torch.stack([x.flatten(), y.flatten()], 1)
         target_coordinate_partial_repr = self.compute_partial_repr(target_coordinate, target_control_points)
         target_coordinate_repr = torch.cat([target_coordinate_partial_repr, torch.ones(HW, 1), target_coordinate], 1)

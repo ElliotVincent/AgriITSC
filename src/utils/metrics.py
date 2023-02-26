@@ -80,7 +80,7 @@ class ConfusionMatrix(Metric):
 
     def get_acc_per_class(self):
         # return list(np.diag(self.meanshift_conf) / self.conf.sum(1) * 100), \
-        return list(np.diag(self.purity_conf) / self.conf.sum(1) * 100)
+        return list(np.diag(self.purity_conf) / np.maximum(self.conf.sum(1), 1) * 100)
 
     def reset(self):
         if self.device == 'cpu':
