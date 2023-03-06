@@ -16,5 +16,5 @@ Check out our [**webpage**](https://imagine.enpc.fr/~vincente/) for other detail
 
 ![alt text](https://github.com/ElliotVincent/AgriITSC/blob/main/agriitsc_teaser.png?raw=true)
 
+If you find this code useful, don't forget to <b>star the repo :star:</b>.
 
-<summary>If you find this code useful, don't forget to <b>star the repo :star:</b>.
