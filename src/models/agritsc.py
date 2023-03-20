@@ -112,7 +112,6 @@ class AgriSits(nn.Module):
             return output_seq, input_seq, distances, indices, label, mask, prototypes
         return output_seq, input_seq, distances, indices, label, mask
 
-
     def initialize_prototypes(self):
         if self.init_proto in ['sample', 'means']:
             sample, sample_mask = self.sample

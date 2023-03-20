@@ -19,7 +19,7 @@ Check out our [**webpage**](https://imagine.enpc.fr/~vincente/) for other detail
 If you find this code useful, don't forget to <b>star the repo :star:</b>.
 
 
-## Installation :construction_worker:
+## Installation :gear:
 
 ### 1. Clone the repository in recursive mode
 
