@@ -4,7 +4,6 @@ Taken from https://github.com/davidtvs/PyTorch-ENet/blob/master/metric/confusion
 
 import numpy as np
 import torch
-import pandas as pd
 from scipy.optimize import linear_sum_assignment
 from sklearn.cluster import MeanShift
 
