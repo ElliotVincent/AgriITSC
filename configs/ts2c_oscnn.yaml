@@ -1,0 +1,20 @@
+dataset:
+  name: ts2c
+model:
+  name: "oscnn"
+  num_steps: 363
+  input_dim: 9
+  num_classes: 16
+  Result_log_folder: './results'
+  dataset_name: ts2c
+  fold: 2
+  device: "cuda:0"
+  max_epoch: 300
+  Max_kernel_size: 89
+  start_kernel_size: 1
+  paramenter_number_of_layer_list: [1024, 114688]
+  quarter_or_half: 4
+training:
+  rdm_seed: 621
+  n_workers: 4
+  batch_size: 2

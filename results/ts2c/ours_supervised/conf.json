@@ -3,7 +3,7 @@
         "name": "ts2c"
     },
     "model": {
-	"name": "agrisits",
+	"name": "dtits",
         "input_dim": 9,
         "num_steps": 363,
         "num_classes": 16,
@@ -39,10 +39,7 @@
             1000000000,
             1000000000
         ],
-        "rdm_seed": 709,
-        "visualizer_port": 8889,
-        "pretrained": null,
-        "resume": null
+        "rdm_seed": 709
     },
     "N_params": 401536
 }

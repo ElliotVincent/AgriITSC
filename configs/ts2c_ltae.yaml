@@ -1,0 +1,26 @@
+dataset:
+  name: ts2c
+model:
+  name: "ltae"
+  input_dim: 9
+  in_channels: 128
+  num_classes: 16
+  n_head: 16
+  d_k: 8
+  dropout: 0.2
+  d_model: 256
+  T: 1000
+  num_steps: 363
+training:
+  device: cuda
+  batch_size: 4
+  n_workers: 4
+  optimizer:
+    lr: 1.0e-4
+  scheduler:
+    milestones: [30000, 90000]
+    gamma: 0.1
+  n_epochs: 25000
+  print_step: 500
+  valid_step: 10000
+  rdm_seed: 621

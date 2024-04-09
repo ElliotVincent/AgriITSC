@@ -1,0 +1,17 @@
+dataset:
+  name: ts2c
+  size: 0.001
+  offset: 0
+model:
+  name: ncc
+  input_dim: 9
+  num_steps: 363
+  num_classes: 16
+  num_prototypes: 16
+  init_proto: means_gaussian
+  missing_dates: True
+  supervised: True
+training:
+  device: cuda
+  batch_size: 4
+  n_workers: 4

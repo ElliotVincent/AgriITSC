@@ -62,13 +62,13 @@ unzip TimeSen2Crop.zip
 To train and evaluate our method with supervision do:
 
 ```bash
-PYTHONPATH=$PYTHONPATH:./src python3 src/trainer.py -t supervised -c ts2c_sup.yaml
+PYTHONPATH=$PYTHONPATH:./src python3 src/trainer.py -t supervised -c ts2c_dtits_supervised.yaml
 ```
 
 And without supervision do:
 
 ```bash
-PYTHONPATH=$PYTHONPATH:./src python3 src/trainer.py -t unsupervised -c ts2c_unsup.yaml
+PYTHONPATH=$PYTHONPATH:./src python3 src/trainer.py -t unsupervised -c ts2c_dtits_unsupervised.yaml
 ```
 
 ### 3. Saved model

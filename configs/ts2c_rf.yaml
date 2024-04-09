@@ -1,0 +1,11 @@
+dataset:
+  name: ts2c
+model:
+  name: "rf"
+  input_dim: 9
+  num_classes: 16
+  num_steps: 363
+training:
+  batch_size: 64
+  n_workers: 4
+  rdm_seed: 621
