@@ -2,7 +2,7 @@
 <h2>
 Pixel-wise Agricultural Image Time Series Classification: Comparisons and a Deformable Prototype-based Approach<p></p>
 
-<a href="https://imagine.enpc.fr/~vincente/">Elliot Vincent</a>&emsp;
+<a href="https://imagine.enpc.fr/~elliot.vincent/">Elliot Vincent</a>&emsp;
 <a href="https://www.di.ens.fr/~ponce/">Jean Ponce</a>&emsp;
 <a href="https://imagine.enpc.fr/~aubrym/">Mathieu Aubry</a>
 
@@ -12,7 +12,7 @@ Pixel-wise Agricultural Image Time Series Classification: Comparisons and a Defo
 </div>
 
 Official PyTorch implementation of [**Pixel-wise Agricultural Image Time Series Classification: Comparisons and a Deformable Prototype-based Approach**](http://arxiv.org/abs/2303.12533).
-Check out our [**webpage**](https://imagine.enpc.fr/~vincente/agriitsc) for other details!
+Check out our [**webpage**](https://imagine.enpc.fr/~elliot.vincent/agriitsc) for other details!
 
 ![alt text](https://github.com/ElliotVincent/AgriITSC/blob/main/agriitsc_teaser.png?raw=true)
 
